@@ -31,7 +31,7 @@ jobs:
           set -e
           publish() {
             cd "packages/$1"
-            npm ci
+            npm ci || npm install --no-audit --no-fund   # os-mcp lock may point at an unpublished os-sdk
             npm run typecheck --if-present
             npm test
             npm run build

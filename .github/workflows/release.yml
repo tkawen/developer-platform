@@ -1,0 +1,48 @@
+name: Release
+# Publishes packages to npm with provenance via npm Trusted Publishing (OIDC) — no npm token stored.
+# One-time setup per package on npmjs.com: Settings → Trusted Publisher → GitHub Actions,
+#   organization/user: tkawen, repository: developer-platform, workflow: release.yml
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: 'Package to publish'
+        required: true
+        type: choice
+        options: [all, verify, os-sdk, os-mcp]
+permissions:
+  contents: read
+  id-token: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: npm with Trusted Publishing support
+        run: npm install -g npm@latest && npm --version
+      - name: Publish
+        env:
+          PKG: ${{ inputs.package }}
+        run: |
+          set -e
+          publish() {
+            cd "packages/$1"
+            npm ci
+            npm run typecheck --if-present
+            npm test
+            npm run build
+            v=$(node -p "require('./package.json').version"); n=$(node -p "require('./package.json').name")
+            if npm view "$n@$v" version >/dev/null 2>&1; then echo "$n@$v already published — skipping"; else npm publish --access public --provenance; fi
+            cd - >/dev/null
+          }
+          if [ "$PKG" = all ]; then
+            publish verify; publish os-sdk
+            # os-mcp resolves @tkawen/os-sdk from the registry; give it a moment
+            sleep 30; publish os-mcp
+          else
+            publish "$PKG"
+          fi

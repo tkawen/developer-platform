@@ -8,7 +8,7 @@
 
 ## Reporting a vulnerability
 
-Please do **not** open a public issue. Email **security@tkawen.com** (a placeholder address; confirm it exists before the first publish) with a description of the issue, its impact, steps to reproduce and the affected version. We aim to acknowledge reports within 3 working days.
+Please do **not** open a public issue. Email **security@tkawen.com** with a description of the issue, its impact, steps to reproduce and the affected version. We aim to acknowledge reports within 3 working days.
 
 ## Scope and design
 

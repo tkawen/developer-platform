@@ -8,7 +8,7 @@
 
 ## Reporting a vulnerability
 
-Please do **not** open a public issue. Email **security@tkawen.com** (a placeholder address; confirm it exists before the first publish) with:
+Please do **not** open a public issue. Email **security@tkawen.com** with:
 
 - a description of the issue and its impact
 - steps to reproduce, or a proof of concept

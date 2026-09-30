@@ -1,0 +1,13 @@
+{
+  "name": "tkawen-developer-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TKAWEN developer platform: OpenAPI spec of the TKAWEN OS tenant API and the @tkawen/* npm packages (unpublished).",
+  "license": "MIT",
+  "scripts": {
+    "install:all": "npm --prefix packages/verify install && npm --prefix packages/os-sdk install && npm --prefix packages/os-mcp install",
+    "test": "npm --prefix packages/verify test && npm --prefix packages/os-sdk test && npm --prefix packages/os-mcp test",
+    "build": "npm --prefix packages/verify run build && npm --prefix packages/os-sdk run build && npm --prefix packages/os-mcp run build",
+    "pack:check": "npm pack --dry-run ./packages/verify && npm pack --dry-run ./packages/os-sdk && npm pack --dry-run ./packages/os-mcp"
+  }
+}

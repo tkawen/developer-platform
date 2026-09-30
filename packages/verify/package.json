@@ -1,0 +1,73 @@
+{
+  "name": "@tkawen/verify",
+  "version": "0.1.1",
+  "description": "Zero-dependency certificate verification client and <tkawen-verify> web component for TKAWEN academies and Algeria Certify.",
+  "license": "MIT",
+  "author": "TKAWEN",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "unpkg": "./dist/tkawen-verify.iife.js",
+  "jsdelivr": "./dist/tkawen-verify.iife.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./element": {
+      "types": "./dist/element.d.ts",
+      "import": "./dist/element.js"
+    },
+    "./iife": "./dist/tkawen-verify.iife.js",
+    "./package.json": "./package.json"
+  },
+  "sideEffects": [
+    "./dist/element.js",
+    "./dist/tkawen-verify.iife.js"
+  ],
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "SECURITY.md",
+    "ENDPOINTS.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "certificate",
+    "verification",
+    "web-component",
+    "tkawen",
+    "algeria-certify",
+    "credential"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "happy-dom": "^20.14.5",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tkawen/developer-platform.git",
+    "directory": "packages/verify"
+  },
+  "homepage": "https://github.com/tkawen/developer-platform/tree/main/packages/verify#readme",
+  "bugs": {
+    "url": "https://github.com/tkawen/developer-platform/issues"
+  }
+}

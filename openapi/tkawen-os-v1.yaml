@@ -1,0 +1,4422 @@
+openapi: 3.1.0
+info:
+  title: TKAWEN OS Tenant API
+  version: '1'
+  summary: Tenant-scoped learner, catalogue and commerce API of a TKAWEN OS academy.
+  description: 'Derived from the TKAWEN OS kernel source.
+
+    Nothing here is taken from product documents.
+
+
+    **Tenant**: the academy is identified by the host (`InitializeTenancyBySubdomain`) and the
+
+    same routes refuse the central domain (`PreventAccessFromCentralDomains`).
+
+
+    **Envelopes are not uniform.** Laravel `JsonResource` responses are wrapped in `{"data": ...}`
+
+    (no `withoutWrapping()` anywhere in the kernel); many controllers return a hand-built
+
+    `response()->json(...)` with their own top-level keys. Each operation documents the actual shape.
+
+
+    **Errors are not uniform either.** Framework errors use `{"message": ...}` (+ `errors` for 422);
+
+    several controllers return `{"error": ...}`; the lesson gate returns `{"message","error":"lesson_locked",...}`
+
+    with HTTP 423; certificate verification returns `{"status":"not_found"}`.
+
+
+    **Nullability.** A field is marked nullable where the code produces `null` explicitly. Fields passed
+
+    through straight from a database column are typed from the model cast; whether the column itself
+
+    may be null is not asserted here.
+
+
+    **Rate limits** (`x-rate-limit`): every route except `/verify/{code}` runs under the named limiter
+
+    `api-v1` (120/min keyed by user id when `$request->user()` resolves, otherwise 60/min keyed by IP).
+
+    `/verify/{code}` runs under `api-v1-verify` only (10/min and 300/day per IP). Some routes add a
+
+    per-route limiter `throttle:N,M,prefix` (alias `ThrottlePerRoute`: N attempts per M minutes, keyed by
+
+    user-or-IP + method + route URI).'
+  license:
+    name: MIT
+    identifier: MIT
+servers:
+- url: https://{academy}.tkawen.com/api/v1
+  description: Tenant host. The academy subdomain selects the tenant database.
+  variables:
+    academy:
+      default: demo
+      description: The academy's subdomain on tkawen.com (tenant identified by host).
+tags:
+- name: Catalogue
+  description: Public course catalogue, instructors, reviews, sitemap.
+- name: Auth
+  description: Sign-in methods available on this academy.
+- name: Learning
+  description: Lesson room, captions, progress, discussion, assignments, locks, transcript.
+- name: Commerce
+  description: Cart, checkout, orders, payment methods and payments.
+- name: Me
+  description: The signed-in learner's own rows.
+- name: Wishlist
+  description: The learner's saved courses, instructors and bundles.
+- name: Requests
+  description: The learner's requests to the academy.
+- name: Certificates
+  description: Public certificate verification.
+- name: Staff
+  description: Academy staff (tenant_admin, instructor, super_admin).
+security: []
+paths:
+  /courses:
+    get:
+      operationId: listCourses
+      tags:
+      - Catalogue
+      summary: List published courses (paginated, filterable, Arabic-aware search).
+      description: 'Only `status = published`. Unknown filter values are ignored, not refused.
+
+        Default order: `published_at` desc, then `id` desc (also the tie-breaker of other sorts).
+
+        When `q` is given, the published set is scored in PHP and ranked by score (sort is ignored in that case
+
+        except as the pre-order of the candidate set).'
+      security: []
+      x-rate-limit: api-v1
+      parameters:
+      - name: category
+        in: query
+        schema:
+          type: string
+        description: Exact category match.
+      - name: level
+        in: query
+        schema:
+          $ref: '#/components/schemas/CourseLevel'
+      - name: language
+        in: query
+        schema:
+          type: string
+          enum:
+          - ar
+          - fr
+          - en
+      - name: price
+        in: query
+        schema:
+          type: string
+          enum:
+          - free
+          - paid
+        description: 'free: price <= 0, paid: price > 0.'
+      - name: sort
+        in: query
+        schema:
+          type: string
+          enum:
+          - newest
+          - popular
+          - price_asc
+          - price_desc
+          default: newest
+        description: popular = enrollments_count desc. Any other value = newest.
+      - name: q
+        in: query
+        schema:
+          type: string
+        description: Arabic-aware search over title, short_description, category and tags.
+      - name: per_page
+        in: query
+        schema:
+          type: integer
+          default: 12
+          maximum: 50
+        description: Capped at 50 (min(per_page, 50)); no lower bound in code.
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+          minimum: 1
+      responses:
+        '200':
+          description: Paginated course collection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - links
+                - meta
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Course'
+                  links:
+                    $ref: '#/components/schemas/PaginationLinks'
+                  meta:
+                    $ref: '#/components/schemas/PaginationMeta'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /courses/{slug}:
+    get:
+      operationId: getCourse
+      tags:
+      - Catalogue
+      summary: One published course with its modules, lessons, prerequisites and rating.
+      security: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/CourseSlug'
+      responses:
+        '200':
+          description: The course (JsonResource, wrapped). Includes `modules` and `prerequisites`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Course'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /courses/{slug}/related:
+    get:
+      operationId: listRelatedCourses
+      tags:
+      - Catalogue
+      summary: Up to three other published courses, same category first, then newest.
+      security: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/CourseSlug'
+      responses:
+        '200':
+          description: Related courses (not paginated).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: array
+                    maxItems: 3
+                    items:
+                      $ref: '#/components/schemas/Course'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /courses/{slug}/reviews:
+    get:
+      operationId: listCourseReviews
+      tags:
+      - Catalogue
+      summary: Approved reviews of a published course, with average and distribution.
+      security: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/CourseSlug'
+      - name: per_page
+        in: query
+        schema:
+          type: integer
+          default: 10
+          minimum: 1
+          maximum: 30
+        description: Clamped to 1..30.
+      - name: page
+        in: query
+        schema:
+          type: integer
+          default: 1
+      responses:
+        '200':
+          description: Reviews page (hand-built envelope; not the Laravel paginator shape).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - meta
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/PublicReview'
+                  meta:
+                    type: object
+                    required:
+                    - average
+                    - total
+                    - distribution
+                    - current_page
+                    - last_page
+                    properties:
+                      average:
+                        type:
+                        - number
+                        - 'null'
+                        description: Rounded to 1 decimal; null when no approved review.
+                      total:
+                        type: integer
+                      distribution:
+                        type: object
+                        description: Count of approved reviews per star, keys "5".."1".
+                        properties:
+                          '5':
+                            type: integer
+                          '4':
+                            type: integer
+                          '3':
+                            type: integer
+                          '2':
+                            type: integer
+                          '1':
+                            type: integer
+                      current_page:
+                        type: integer
+                      last_page:
+                        type: integer
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    post:
+      operationId: submitCourseReview
+      tags:
+      - Catalogue
+      summary: Create or replace the caller's review (goes back to pending approval).
+      description: 'Requires an `active` or `completed` enrolment in this course. Upsert on (course, user);
+
+        every write sets `is_approved = false`. Comment is stripped of tags and trimmed; empty becomes null.'
+      security:
+      - sanctumToken: []
+      x-rate-limit:
+      - api-v1
+      - throttle:6,1,post-courses-slug-reviews (6 per 1 minute)
+      parameters:
+      - $ref: '#/components/parameters/CourseSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - rating
+              properties:
+                rating:
+                  type: integer
+                  minimum: 1
+                  maximum: 5
+                comment:
+                  type:
+                  - string
+                  - 'null'
+                  maxLength: 2000
+      responses:
+        '201':
+          description: Stored, pending approval.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - review
+                - message
+                properties:
+                  review:
+                    $ref: '#/components/schemas/MyReview'
+                  message:
+                    type: string
+                    description: Arabic confirmation text.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Caller has no active/completed enrolment in this course.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageError'
+              example:
+                message: التقييم متاح للمسجّلين في هذا البرنامج فقط.
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /courses/{slug}/reviews/mine:
+    get:
+      operationId: getMyCourseReview
+      tags:
+      - Catalogue
+      summary: Whether the caller may review this course, and their existing review.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/CourseSlug'
+      responses:
+        '200':
+          description: Eligibility and review.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - eligible
+                - review
+                properties:
+                  eligible:
+                    type: boolean
+                    description: Has an active or completed enrolment.
+                  review:
+                    oneOf:
+                    - $ref: '#/components/schemas/MyReview'
+                    - type: 'null'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /courses/{slug}/locks:
+    get:
+      operationId: getCourseLocks
+      tags:
+      - Learning
+      summary: Lock state and completion of every lesson for the caller's own enrolment.
+      description: The course is looked up by slug without a published filter. 404 when the caller has no enrolment in it.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/CourseSlug'
+      responses:
+        '200':
+          description: Locks keyed by lesson slug, in gate order.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - progress
+                - enrollment
+                properties:
+                  data:
+                    type: object
+                    description: Map lesson slug -> lock.
+                    additionalProperties:
+                      $ref: '#/components/schemas/LessonLock'
+                  progress:
+                    type: object
+                    required:
+                    - done
+                    - total
+                    - percent
+                    properties:
+                      done:
+                        type: integer
+                      total:
+                        type: integer
+                      percent:
+                        type: integer
+                  enrollment:
+                    type: object
+                    required:
+                    - status
+                    - active
+                    properties:
+                      status:
+                        $ref: '#/components/schemas/EnrollmentStatus'
+                      active:
+                        type: boolean
+                        description: True when status is active or completed.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /instructors:
+    get:
+      operationId: listInstructors
+      tags:
+      - Catalogue
+      summary: Faculty directory — instructors/admins teaching at least one published course.
+      security: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Ordered by name. Not paginated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                      - public_id
+                      - name
+                      - bio
+                      - avatar
+                      - courses_count
+                      - categories
+                      properties:
+                        public_id:
+                          type: string
+                        name:
+                          type: string
+                        bio:
+                          type:
+                          - string
+                          - 'null'
+                        avatar:
+                          type:
+                          - string
+                          - 'null'
+                          description: Stored value, not made absolute.
+                        courses_count:
+                          type: integer
+                        categories:
+                          type: array
+                          items:
+                            type: string
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /instructors/{publicId}:
+    get:
+      operationId: getInstructor
+      tags:
+      - Catalogue
+      summary: Public instructor profile and their published courses.
+      description: Only users with role instructor or tenant_admin and not banned; anyone else is 404.
+      security: []
+      x-rate-limit: api-v1
+      parameters:
+      - name: publicId
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Profile (hand-built, not wrapped in data).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - public_id
+                - name
+                - bio
+                - avatar
+                - courses_count
+                - lessons_count
+                - courses
+                properties:
+                  public_id:
+                    type: string
+                  name:
+                    type: string
+                  bio:
+                    type:
+                    - string
+                    - 'null'
+                  avatar:
+                    type:
+                    - string
+                    - 'null'
+                  courses_count:
+                    type: integer
+                  lessons_count:
+                    type: integer
+                  courses:
+                    type: array
+                    description: CourseResource items, ordered by id desc (no rating block, no modules).
+                    items:
+                      $ref: '#/components/schemas/Course'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /catalogue/facets:
+    get:
+      operationId: getCatalogueFacets
+      tags:
+      - Catalogue
+      summary: Filter values with counts, derived from the published set.
+      security: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Facets.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - total
+                - categories
+                - levels
+                - languages
+                - price
+                properties:
+                  total:
+                    type: integer
+                  categories:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FacetValue'
+                  levels:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FacetValue'
+                  languages:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/FacetValue'
+                  price:
+                    type: object
+                    required:
+                    - free
+                    - paid
+                    properties:
+                      free:
+                        type: integer
+                      paid:
+                        type: integer
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /sitemap:
+    get:
+      operationId: getSitemapFeed
+      tags:
+      - Catalogue
+      summary: Data for the client's /sitemap.xml.
+      security: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Published courses, teaching instructors, published pages, and whether active plans exist.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - courses
+                - instructors
+                - pages
+                - has_plans
+                properties:
+                  courses:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        slug:
+                          type: string
+                        updated_at:
+                          type:
+                          - string
+                          - 'null'
+                          format: date-time
+                  instructors:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        public_id:
+                          type: string
+                        updated_at:
+                          type:
+                          - string
+                          - 'null'
+                          format: date-time
+                  pages:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        slug:
+                          type: string
+                        updated_at:
+                          type:
+                          - string
+                          - 'null'
+                          format: date-time
+                  has_plans:
+                    type: boolean
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /auth/providers:
+    get:
+      operationId: listAuthProviders
+      tags:
+      - Auth
+      summary: Sign-in methods actually wired on this academy.
+      description: 'This API does not issue tokens. Tokens are minted by the legacy unversioned routes
+
+        (e.g. `POST /api/auth/login` on the tenant host) — outside /api/v1.'
+      security: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Providers.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - providers
+                - password
+                properties:
+                  providers:
+                    type: array
+                    items:
+                      type: object
+                      required:
+                      - id
+                      - label
+                      - url
+                      - kind
+                      properties:
+                        id:
+                          type: string
+                          enum:
+                          - tkawen
+                          - google
+                          - facebook
+                          - github
+                        label:
+                          type: string
+                        url:
+                          type: string
+                          description: Relative URL of the redirect route.
+                        kind:
+                          type: string
+                          enum:
+                          - oidc
+                          - oauth
+                  password:
+                    type: boolean
+                    const: true
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /lessons/{slug}:
+    get:
+      operationId: getLesson
+      tags:
+      - Learning
+      summary: The lesson room payload (content, signed media URLs, progress).
+      description: 'Public route with optional bearer token (resolved on the `sanctum` guard). A lesson that is neither
+
+        `is_preview` nor `is_free` is 404 without an enrolment (404, not 403, by design). An enrolled caller
+
+        may get 423 from the sequential gate. Signed asset URLs live 300 s (`expires_in`).
+
+        Note: the course''s publication status is not checked by this handler.'
+      security:
+      - {}
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/LessonSlug'
+      responses:
+        '200':
+          description: Lesson.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LessonDetail'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '423':
+          $ref: '#/components/responses/LessonLocked'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /lessons/{slug}/captions:
+    get:
+      operationId: getLessonCaptions
+      tags:
+      - Learning
+      summary: Caption cues of a lesson, with in-video search.
+      description: 'Door: `is_preview` lesson or an enrolment (else 404), then the sequential gate (423).
+
+        Unlike getLesson, `is_free` alone does not open this route (uses `Lesson::isOpenPreview()` = is_preview).'
+      security:
+      - {}
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/LessonSlug'
+      - name: q
+        in: query
+        schema:
+          type: string
+        description: Arabic-aware search over cue text.
+      responses:
+        '200':
+          description: Cues. When no caption asset exists, `available` is false and `q` is absent.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                    - available
+                    - cues
+                    - hits
+                    properties:
+                      available:
+                        type: boolean
+                      cues:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            start:
+                              type: number
+                              description: Seconds.
+                            end:
+                              type: number
+                              description: Seconds.
+                            text:
+                              type: string
+                      hits:
+                        type: array
+                        items:
+                          type: object
+                          properties:
+                            i:
+                              type: integer
+                              description: Cue index.
+                            t:
+                              type: integer
+                              description: Second to seek to (floor of start).
+                            text:
+                              type: string
+                      q:
+                        type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '423':
+          $ref: '#/components/responses/LessonLocked'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /lessons/{slug}/progress:
+    post:
+      operationId: recordLessonProgress
+      tags:
+      - Learning
+      summary: The 30-second watch ping — accumulates watch time, stores position, may complete the lesson.
+      description: '`seconds` is capped server-side at 60 per ping. `completed` is ignored for lessons that complete
+
+        only by result (quiz with questions, assignment, SCORM). Completion also requires the lesson''s
+
+        `required_watch_pct` of its duration to have been accumulated.'
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/LessonSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - seconds
+              properties:
+                seconds:
+                  type: integer
+                  minimum: 0
+                  maximum: 3600
+                position:
+                  type: integer
+                  minimum: 0
+                completed:
+                  type: boolean
+      responses:
+        '200':
+          description: Progress after this ping.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProgressPingResult'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '423':
+          $ref: '#/components/responses/LessonLocked'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /lessons/{slug}/discussion:
+    get:
+      operationId: listLessonDiscussion
+      tags:
+      - Learning
+      summary: Question threads under a lesson (enrolled learners and course staff).
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/LessonSlug'
+      responses:
+        '200':
+          description: Threads, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - can_post
+                - is_staff
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/DiscussionThread'
+                  can_post:
+                    type: boolean
+                    const: true
+                  is_staff:
+                    type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    post:
+      operationId: postLessonDiscussion
+      tags:
+      - Learning
+      summary: Ask a question, or reply to a top-level thread.
+      description: A new question notifies the course instructor (else the tenant admins); a reply notifies the thread author.
+      security:
+      - sanctumToken: []
+      x-rate-limit:
+      - api-v1
+      - throttle:30,1,post-lessons-slug-discussion (30 per 1 minute)
+      parameters:
+      - $ref: '#/components/parameters/LessonSlug'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - body
+              properties:
+                body:
+                  type: string
+                  minLength: 2
+                  maxLength: 4000
+                parent_id:
+                  type:
+                  - integer
+                  - 'null'
+                  description: Id of a top-level comment on this lesson; otherwise 404.
+      responses:
+        '201':
+          description: Created comment (as a thread row).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/DiscussionThread'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /lessons/{slug}/assignment:
+    post:
+      operationId: submitLessonAssignment
+      tags:
+      - Learning
+      summary: Hand in an assignment (text and/or file).
+      description: 'Lesson must be of type `assignment` with an assignment attached, and the caller enrolled (else 404);
+
+        then the sequential gate (423). Business rules (attempts, due date, text-only/file-only, file type,
+
+        20 MB) are raised as 422 validation errors on keys `assignment`, `content` or `file`.'
+      security:
+      - sanctumToken: []
+      x-rate-limit:
+      - api-v1
+      - throttle:20,1,post-lessons-slug-assignment (20 per 1 minute)
+      parameters:
+      - $ref: '#/components/parameters/LessonSlug'
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                content:
+                  type:
+                  - string
+                  - 'null'
+                  maxLength: 20000
+                file:
+                  type: string
+                  format: binary
+                  description: max:20480 KB (Assignments::MAX_FILE_KB).
+          application/json:
+            schema:
+              type: object
+              properties:
+                content:
+                  type:
+                  - string
+                  - 'null'
+                  maxLength: 20000
+      responses:
+        '201':
+          description: The assignment payload after submission, plus the new submission id.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - submission_id
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Assignment'
+                  submission_id:
+                    type: integer
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '423':
+          $ref: '#/components/responses/LessonLocked'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /assignment-submissions/{submission}/file:
+    get:
+      operationId: downloadAssignmentSubmissionFile
+      tags:
+      - Learning
+      summary: Download a submission's file (owner, tenant admin, or the course's instructor).
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - name: submission
+        in: path
+        required: true
+        schema:
+          type: integer
+        description: Numeric submission row id.
+      responses:
+        '200':
+          description: 'File download (`Content-Disposition: attachment`, `Cache-Control: private, no-store`, `X-Content-Type-Options:
+            nosniff`). Content type not determinable from code.'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /payment-methods:
+    get:
+      operationId: listPaymentMethods
+      tags:
+      - Commerce
+      summary: Payment methods this academy accepts (Chargily flag, CCP transfer details).
+      security: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Methods.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                    - chargily
+                    - ccp
+                    properties:
+                      chargily:
+                        type: boolean
+                      ccp:
+                        oneOf:
+                        - type: 'null'
+                        - type: object
+                          required:
+                          - holder
+                          - account
+                          - key
+                          - rip
+                          - note
+                          properties:
+                            holder:
+                              type: string
+                            account:
+                              type: string
+                              description: Digits only.
+                            key:
+                              type: string
+                            rip:
+                              type: string
+                            note:
+                              type: string
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /cart:
+    get:
+      operationId: getCart
+      tags:
+      - Commerce
+      summary: Read the caller's (or guest's) open cart. Never creates one.
+      description: 'Signed-in (bearer token resolved on sanctum) → cart by user. Guest → cart by `X-Cart-Key` header,
+
+        else `tkawen_cart_key` cookie, else a freshly minted key set as that cookie (30 days, HttpOnly, Lax).
+
+        When no cart exists an unsaved empty cart is returned.'
+      security:
+      - {}
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/CartKey'
+      responses:
+        '200':
+          description: Cart (JsonResource, wrapped).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /cart/items:
+    post:
+      operationId: addCartItem
+      tags:
+      - Commerce
+      summary: Add a published course to the cart (or increase its quantity).
+      description: Price is read from the course, never from the request. Creates the cart if needed.
+      security:
+      - {}
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/CartKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - slug
+              properties:
+                slug:
+                  type: string
+                  maxLength: 255
+                quantity:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                  default: 1
+      responses:
+        '200':
+          description: Updated cart. (A JsonResource around a model saved earlier in the request; Laravel may answer 201 when
+            the cart row was created in this request — status depends on `wasRecentlyCreated`, see GAPS.)
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
+        '201':
+          description: Same body, when the cart was created by this request.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /cart/items/{slug}:
+    delete:
+      operationId: removeCartItem
+      tags:
+      - Commerce
+      summary: Remove a course from the cart.
+      description: Creates an empty cart if none exists (unlike GET /cart). Unknown slug is a no-op.
+      security:
+      - {}
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - name: slug
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Course slug of the cart line.
+      - $ref: '#/components/parameters/CartKey'
+      responses:
+        '200':
+          description: Updated cart.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
+        '201':
+          description: Same body, when the cart was created by this request.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Cart'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /checkout:
+    post:
+      operationId: createCheckoutOrder
+      tags:
+      - Commerce
+      summary: Turn the open cart into a pending order (prices and coupon recomputed server-side).
+      description: 'Uses the caller''s open cart; if none, claims an open guest cart by `X-Cart-Key` (or the cart cookie).
+
+        Coupon: active coupon by code; `percent` or fixed amount (value × 100 minor units, capped at subtotal).
+
+        Unknown coupon codes are ignored silently.'
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      x-known-defect: Known server defect; a fix is pending deployment.
+      parameters:
+      - $ref: '#/components/parameters/CartKey'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                coupon:
+                  type:
+                  - string
+                  - 'null'
+                  maxLength: 64
+      responses:
+        '201':
+          description: Pending order with items.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Order'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: No open cart (message «لا توجد سلّة مفتوحة.»), or a cart line's course no longer exists.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageError'
+        '422':
+          description: Cart is empty (`abort(422, "The cart is empty.")`) or validation failure.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /orders/{number}/pay:
+    post:
+      operationId: settleFreeOrder
+      tags:
+      - Commerce
+      summary: Settle the caller's own zero-total order (issues invoice, enrols, converts cart).
+      description: Orders with total_minor > 0 are refused with 402 — those are settled by the gateway or by receipt verification.
+        Dispatches the `order.paid` webhook.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - name: number
+        in: path
+        required: true
+        schema:
+          type: string
+        description: Order number.
+      responses:
+        '200':
+          description: Paid order with items and invoice.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Order'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '402':
+          description: Order has a price; the buyer cannot settle it here.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - error
+                - requires_payment
+                - total_minor
+                properties:
+                  error:
+                    type: string
+                  requires_payment:
+                    type: boolean
+                    const: true
+                  total_minor:
+                    type: integer
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Already paid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageError'
+              example:
+                message: This order is already paid.
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/payments:
+    get:
+      operationId: listMyPayments
+      tags:
+      - Commerce
+      summary: The caller's payments with a derived stage (latest 200).
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Payments, newest first, max 200, not paginated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Payment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/enrollments:
+    get:
+      operationId: listMyEnrollments
+      tags:
+      - Me
+      summary: The caller's enrolments with course and certificate (EnrollmentResource).
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: All enrolments, id desc, not paginated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Enrollment'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/enrollments/list:
+    get:
+      operationId: listMyEnrollmentsByPublicId
+      tags:
+      - Me
+      summary: The caller's enrolments by public id (compact rows).
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Rows, id desc, not paginated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EnrollmentSummary'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/enrollments/{publicId}:
+    get:
+      operationId: getMyEnrollmentTimeline
+      tags:
+      - Me
+      summary: One enrolment with its step timeline and status events.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      x-known-defect: Known server defect; a fix is pending deployment.
+      parameters:
+      - name: publicId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: ^ENR-[0-9]{4}-[A-Z0-9]{6}$
+        description: Route constraint `ENR-[0-9]{4}-[A-Z0-9]{6}`; anything else does not match the route (404).
+      responses:
+        '200':
+          description: Timeline.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/EnrollmentTimeline'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/dashboard:
+    get:
+      operationId: getMyDashboard
+      tags:
+      - Me
+      summary: Student portal home — continue, pending, earned, next.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Dashboard (hand-built, not wrapped).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StudentDashboard'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/courses:
+    get:
+      operationId: listMyCourses
+      tags:
+      - Me
+      summary: The caller's courses with a derived display state, resume point, assessment and certificate.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Courses and counts per state.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - counts
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/MyCourse'
+                  counts:
+                    type: object
+                    required:
+                    - all
+                    - not_started
+                    - active
+                    - completed
+                    - expired
+                    - cancelled
+                    - pending
+                    properties:
+                      all:
+                        type: integer
+                      not_started:
+                        type: integer
+                      active:
+                        type: integer
+                      completed:
+                        type: integer
+                      expired:
+                        type: integer
+                      cancelled:
+                        type: integer
+                      pending:
+                        type: integer
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/transcript/{slug}:
+    get:
+      operationId: getMyTranscript
+      tags:
+      - Learning
+      summary: Weighted gradebook for the caller's enrolment in a course.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/CourseSlug'
+      responses:
+        '200':
+          description: Transcript.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/Transcript'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/requests:
+    get:
+      operationId: listMyRequests
+      tags:
+      - Requests
+      summary: The caller's requests, with counts and the type/status dictionaries.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Requests, id desc, not paginated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                - counts
+                - types
+                - statuses
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StudentRequest'
+                  counts:
+                    type: object
+                    properties:
+                      open:
+                        type: integer
+                      closed:
+                        type: integer
+                  types:
+                    type: object
+                    description: Map request type -> Arabic label.
+                    additionalProperties:
+                      type: string
+                  statuses:
+                    type: object
+                    description: Map status -> Arabic label.
+                    additionalProperties:
+                      type: string
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    post:
+      operationId: createMyRequest
+      tags:
+      - Requests
+      summary: File a request to the academy (notifies tenant admins and the course instructor).
+      security:
+      - sanctumToken: []
+      x-rate-limit:
+      - api-v1
+      - throttle:10,10,post-me-requests (10 per 10 minutes)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - type
+              - title
+              - description
+              properties:
+                type:
+                  $ref: '#/components/schemas/StudentRequestType'
+                title:
+                  type: string
+                  minLength: 3
+                  maxLength: 160
+                description:
+                  type: string
+                  minLength: 10
+                  maxLength: 4000
+                course:
+                  type:
+                  - string
+                  - 'null'
+                  maxLength: 160
+                  description: Course slug (any status).
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/StudentRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '422':
+          description: 'Validation failure (Laravel shape), or unknown course slug (`{"error": "الدورة المذكورة غير موجودة."}`).'
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - $ref: '#/components/schemas/ValidationError'
+                - $ref: '#/components/schemas/ErrorField'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/requests/{publicId}:
+    get:
+      operationId: getMyRequest
+      tags:
+      - Requests
+      summary: One request with its timeline and message thread. Marks staff replies read.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/RequestPublicId'
+      responses:
+        '200':
+          description: Request detail.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/StudentRequestDetail'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/requests/{publicId}/messages:
+    post:
+      operationId: postMyRequestMessage
+      tags:
+      - Requests
+      summary: Reply in a request's thread (open requests only).
+      security:
+      - sanctumToken: []
+      x-rate-limit:
+      - api-v1
+      - throttle:30,10,post-me-requests-publicid-messages (30 per 10 minutes)
+      parameters:
+      - $ref: '#/components/parameters/RequestPublicId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - body
+              properties:
+                body:
+                  type: string
+                  minLength: 1
+                  maxLength: 4000
+      responses:
+        '201':
+          description: Created message.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/RequestMessage'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Request is closed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorField'
+              example:
+                error: هذا الطلب مغلق.
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/requests/{publicId}/cancel:
+    post:
+      operationId: cancelMyRequest
+      tags:
+      - Requests
+      summary: Withdraw a request (only while submitted, under_review or info_required).
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - $ref: '#/components/parameters/RequestPublicId'
+      responses:
+        '200':
+          description: The request after cancellation.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/StudentRequest'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/wishlist:
+    get:
+      operationId: listMyWishlist
+      tags:
+      - Wishlist
+      summary: Saved courses, instructors and bundles; a vanished subject is reported as gone.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      responses:
+        '200':
+          description: Items, id desc, not paginated.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/WishlistItem'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    post:
+      operationId: addToMyWishlist
+      tags:
+      - Wishlist
+      summary: Save a course (slug), instructor (public_id) or bundle (slug). Idempotent.
+      security:
+      - sanctumToken: []
+      x-rate-limit:
+      - api-v1
+      - throttle:60,1,post-me-wishlist (60 per 1 minute)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - type
+              - key
+              properties:
+                type:
+                  $ref: '#/components/schemas/WishlistType'
+                key:
+                  type: string
+                  maxLength: 160
+      responses:
+        '200':
+          description: Already saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WishlistSaved'
+        '201':
+          description: Newly saved.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WishlistSaved'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '404':
+          description: Nothing saveable under that key (course must be published; instructor must have role instructor/tenant_admin).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorField'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/wishlist/check/{type}/{key}:
+    get:
+      operationId: checkMyWishlist
+      tags:
+      - Wishlist
+      summary: Is this subject in the caller's wishlist.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - name: type
+        in: path
+        required: true
+        schema:
+          type: string
+        description: course | instructor | bundle; any other value answers saved=false.
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Saved flag.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                    - saved
+                    properties:
+                      saved:
+                        type: boolean
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /me/wishlist/{type}/{key}:
+    delete:
+      operationId: removeFromMyWishlist
+      tags:
+      - Wishlist
+      summary: Remove a saved subject. Absent item answers 200 saved=false.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - name: type
+        in: path
+        required: true
+        schema:
+          $ref: '#/components/schemas/WishlistType'
+      - name: key
+        in: path
+        required: true
+        schema:
+          type: string
+      responses:
+        '200':
+          description: Not saved (any more).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                    - saved
+                    properties:
+                      saved:
+                        type: boolean
+                        const: false
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /dashboard/metrics:
+    get:
+      operationId: getInstitutionMetrics
+      tags:
+      - Staff
+      summary: Pre-aggregated revenue/enrolment metrics for a date range (staff only).
+      description: Academy staff only.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      parameters:
+      - name: from
+        in: query
+        schema:
+          type: string
+          format: date
+        description: Default today minus 29 days.
+      - name: to
+        in: query
+        schema:
+          type: string
+          format: date
+        description: Default today.
+      - name: currency
+        in: query
+        schema:
+          type: string
+          minLength: 3
+          maxLength: 3
+          default: DZD
+      responses:
+        '200':
+          description: Metrics.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InstitutionMetrics'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '403':
+          description: Not staff (`هذه اللوحة لطاقم المعهد فقط.`) or banned (`الحساب موقوف.`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageError'
+        '422':
+          $ref: '#/components/responses/ValidationFailed'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /verify/{code}:
+    get:
+      operationId: verifyCertificate
+      tags:
+      - Certificates
+      summary: Verify a certificate by certificate code or credential UID. Every attempt is logged.
+      description: Runs under its own limiter `api-v1-verify` only (not `api-v1`), and without the lazy-loading guard.
+      security: []
+      x-rate-limit: api-v1-verify
+      parameters:
+      - name: code
+        in: path
+        required: true
+        schema:
+          type: string
+        description: certificate_code or credential_uid (trimmed).
+      responses:
+        '200':
+          description: Certificate found; `status` is the verdict (a revoked or tampered certificate is still 200).
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - status
+                - credential_uid
+                - issued_at
+                - student_name
+                - course_title
+                properties:
+                  status:
+                    $ref: '#/components/schemas/CertificateStatus'
+                  credential_uid:
+                    type: string
+                  issued_at:
+                    type:
+                    - string
+                    - 'null'
+                    format: date-time
+                  student_name:
+                    type:
+                    - string
+                    - 'null'
+                  course_title:
+                    type:
+                    - string
+                    - 'null'
+        '404':
+          description: No such certificate.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - status
+                properties:
+                  status:
+                    type: string
+                    const: not_found
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+components:
+  securitySchemes:
+    sanctumToken:
+      type: http
+      scheme: bearer
+      description: 'Laravel Sanctum personal access token (`Authorization: Bearer <id>|<token>`), tenant-scoped.
+
+        Issued by legacy unversioned routes (e.g. `POST /api/auth/login`), not by /api/v1.
+
+        No expiry is configured (no ; tokens created without expires_at).'
+  parameters:
+    CourseSlug:
+      name: slug
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Course slug.
+    LessonSlug:
+      name: slug
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Lesson slug.
+    RequestPublicId:
+      name: publicId
+      in: path
+      required: true
+      schema:
+        type: string
+      description: Student request public id. Format not constrained by the route.
+    CartKey:
+      name: X-Cart-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        maxLength: 64
+      description: Guest cart key (truncated to 64 chars). Falls back to the `tkawen_cart_key` cookie.
+  responses:
+    Unauthenticated:
+      description: No or invalid bearer token (Laravel AuthenticationException rendered as JSON; `api/*` always gets JSON).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MessageError'
+          example:
+            message: Unauthenticated.
+    Forbidden:
+      description: Policy refused (Gate::authorize → AuthorizationException).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MessageError'
+    NotFound:
+      description: Model not found, or deliberately hidden (no enrolment / not addressable). Framework JSON error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/MessageError'
+    ValidationFailed:
+      description: Laravel validation error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ValidationError'
+    LessonLocked:
+      description: The sequential/drip/access gate refused this lesson (LessonGate::deny).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/LessonLockedError'
+    TooManyRequests:
+      description: Rate limit hit. Rendered by  for `api/*`; the Arabic message states the wait (seconds, or minutes when
+        >= 90 s).
+      headers:
+        Retry-After:
+          schema:
+            type: integer
+          description: Seconds until retry (also carried as `retry_after`).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/TooManyRequestsError'
+          example:
+            message: محاولات كثيرة في وقت قصير. انتظر 42 ثانية ثم أعد المحاولة.
+            retry_after: 42
+  schemas:
+    MessageError:
+      type: object
+      required:
+      - message
+      properties:
+        message:
+          type: string
+    ErrorField:
+      type: object
+      required:
+      - error
+      description: Controller-level error envelope used by some v1 handlers (different from `message`).
+      properties:
+        error:
+          type: string
+    ValidationError:
+      type: object
+      required:
+      - message
+      - errors
+      properties:
+        message:
+          type: string
+        errors:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+    LessonLockedError:
+      type: object
+      required:
+      - message
+      - error
+      - needs
+      - needs_slug
+      properties:
+        message:
+          type: string
+          description: Arabic reason.
+        error:
+          type: string
+          const: lesson_locked
+        needs:
+          type:
+          - string
+          - 'null'
+          description: Title of the lesson that must be completed/passed first.
+        needs_slug:
+          type:
+          - string
+          - 'null'
+    TooManyRequestsError:
+      type: object
+      required:
+      - message
+      - retry_after
+      properties:
+        message:
+          type: string
+        retry_after:
+          type: integer
+          description: Seconds (defaults to 60 if the header is missing).
+    PaginationLinks:
+      type: object
+      description: Laravel LengthAwarePaginator resource links.
+      properties:
+        first:
+          type:
+          - string
+          - 'null'
+        last:
+          type:
+          - string
+          - 'null'
+        prev:
+          type:
+          - string
+          - 'null'
+        next:
+          type:
+          - string
+          - 'null'
+    PaginationMeta:
+      type: object
+      description: Laravel LengthAwarePaginator resource meta.
+      properties:
+        current_page:
+          type: integer
+        from:
+          type:
+          - integer
+          - 'null'
+        last_page:
+          type: integer
+        links:
+          type: array
+          items:
+            type: object
+            properties:
+              url:
+                type:
+                - string
+                - 'null'
+              label:
+                type: string
+              active:
+                type: boolean
+        path:
+          type: string
+        per_page:
+          type: integer
+        to:
+          type:
+          - integer
+          - 'null'
+        total:
+          type: integer
+    CourseLevel:
+      type: string
+      enum:
+      - beginner
+      - intermediate
+      - advanced
+    CourseStatus:
+      type: string
+      enum:
+      - draft
+      - pending
+      - published
+      - archived
+    LessonType:
+      type: string
+      enum:
+      - video
+      - pdf
+      - text
+      - quiz
+      - live
+      - audio
+      - assignment
+      - scorm
+      - xapi
+    EnrollmentStatus:
+      type: string
+      enum:
+      - pending
+      - active
+      - completed
+      - expired
+      - refunded
+    CertificateStatus:
+      type: string
+      description: Certificate::verify() verdict.
+      enum:
+      - valid
+      - revoked
+      - tampered
+      - invalid_signature
+      - unknown_key
+      - unsigned
+    FacetValue:
+      type: object
+      required:
+      - value
+      - count
+      properties:
+        value:
+          type: string
+        count:
+          type: integer
+    Course:
+      type: object
+      description: 1\CourseResource. Conditional keys appear only when the controller loaded/counted them.
+      required:
+      - slug
+      - title
+      - description
+      - thumbnail
+      - short_description
+      - price
+      - seat_price
+      - level
+      - language
+      - category
+      - duration_hours
+      - is_featured
+      - what_you_learn
+      - requirements
+      - status
+      - published_at
+      - starts_at
+      - not_started
+      - access_days
+      - certificate_enabled
+      - preview_video
+      - faq
+      - updated_at
+      properties:
+        slug:
+          type: string
+        title:
+          type: string
+        description:
+          type:
+          - string
+          - 'null'
+        thumbnail:
+          type:
+          - string
+          - 'null'
+          description: Made absolute against the request host unless already absolute.
+        short_description:
+          type:
+          - string
+          - 'null'
+        price:
+          type:
+          - string
+          - 'null'
+          description: Model cast `decimal:2`, serialised as a string (e.g. "1200.00").
+        seat_price:
+          type:
+          - number
+          - 'null'
+        level:
+          oneOf:
+          - $ref: '#/components/schemas/CourseLevel'
+          - type: 'null'
+        language:
+          type:
+          - string
+          - 'null'
+        category:
+          type:
+          - string
+          - 'null'
+        duration_hours:
+          type:
+          - integer
+          - 'null'
+        is_featured:
+          type: boolean
+        what_you_learn:
+          type:
+          - array
+          - 'null'
+          items:
+            description: type not determinable from code
+        requirements:
+          type:
+          - array
+          - 'null'
+          items:
+            description: type not determinable from code
+        status:
+          $ref: '#/components/schemas/CourseStatus'
+        published_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        starts_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        not_started:
+          type: boolean
+        access_days:
+          type:
+          - integer
+          - 'null'
+        certificate_enabled:
+          type: boolean
+        preview_video:
+          oneOf:
+          - type: 'null'
+          - type: object
+            required:
+            - provider
+            - id
+            properties:
+              provider:
+                type: string
+                const: youtube
+              id:
+                type: string
+          - type: object
+            required:
+            - provider
+            - url
+            properties:
+              provider:
+                type: string
+                const: url
+              url:
+                type: string
+        faq:
+          type: array
+          items:
+            type: object
+            required:
+            - q
+            - a
+            properties:
+              q:
+                type: string
+              a:
+                type: string
+        prerequisites:
+          type: array
+          description: Only on getCourse.
+          items:
+            type: object
+            required:
+            - slug
+            - title
+            - strict
+            - done
+            properties:
+              slug:
+                type: string
+              title:
+                type: string
+              strict:
+                type: boolean
+              done:
+                type: boolean
+                description: Caller (sanctum) completed it; false for guests.
+        lessons_count:
+          type: integer
+          description: When counted.
+        rating:
+          type: object
+          description: When approved reviews were counted.
+          required:
+          - average
+          - count
+          properties:
+            average:
+              type:
+              - number
+              - 'null'
+            count:
+              type: integer
+        updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        instructor:
+          type: object
+          description: When loaded.
+          properties:
+            public_id:
+              type:
+              - string
+              - 'null'
+            name:
+              type: string
+            avatar:
+              type:
+              - string
+              - 'null'
+            bio:
+              type:
+              - string
+              - 'null'
+        modules:
+          type: array
+          description: Only on getCourse.
+          items:
+            $ref: '#/components/schemas/Module'
+    Module:
+      type: object
+      required:
+      - title
+      - order
+      properties:
+        title:
+          type: string
+        order:
+          type: integer
+        lessons:
+          type: array
+          items:
+            $ref: '#/components/schemas/Lesson'
+    Lesson:
+      type: object
+      description: Catalogue lesson (LessonResource). No media handles or content.
+      required:
+      - slug
+      - title
+      - type
+      - order
+      - duration_seconds
+      - is_free_preview
+      properties:
+        slug:
+          type: string
+        title:
+          type: string
+        type:
+          $ref: '#/components/schemas/LessonType'
+        order:
+          type: integer
+        duration_seconds:
+          type: integer
+        is_free_preview:
+          type: boolean
+    LessonAsset:
+      type: object
+      required:
+      - kind
+      - name
+      - bytes
+      - downloadable
+      - duration_secs
+      - url
+      - expires_in
+      properties:
+        kind:
+          type: string
+          description: LessonAsset.kind, or pdf/audio/video for lesson-level media.
+        name:
+          type:
+          - string
+          - 'null'
+        bytes:
+          type: integer
+        downloadable:
+          type: boolean
+        duration_secs:
+          type: integer
+        url:
+          type: string
+          description: Signed URL (asset rows) or plain absolute URL (pdf_path / video_url fallbacks).
+        expires_in:
+          type:
+          - integer
+          - 'null'
+          description: 300 for signed asset URLs; null for fallbacks.
+    LessonDetail:
+      type: object
+      description: LearningController@show payload (not wrapped in data).
+      required:
+      - id
+      - slug
+      - title
+      - type
+      - video
+      - content
+      - poster
+      - required_watch_pct
+      - duration_seconds
+      - markers
+      - course
+      - assets
+      - live
+      - scorm
+      - xapi
+      - assignment
+      - progress
+      properties:
+        id:
+          type: integer
+          description: Numeric lesson row id.
+        slug:
+          type: string
+        title:
+          type: string
+        type:
+          $ref: '#/components/schemas/LessonType'
+        video:
+          oneOf:
+          - type: 'null'
+          - type: object
+            required:
+            - provider
+            - id
+            properties:
+              provider:
+                type: string
+                const: youtube
+              id:
+                type: string
+        content:
+          type:
+          - string
+          - 'null'
+          description: Sanitised HTML; null when neither enrolled nor open.
+        poster:
+          type:
+          - string
+          - 'null'
+        required_watch_pct:
+          type: integer
+        duration_seconds:
+          type: integer
+        markers:
+          type: array
+          items:
+            description: type not determinable from code
+        course:
+          type: object
+          required:
+          - id
+          - slug
+          - title
+          - notice
+          properties:
+            id:
+              type: integer
+            slug:
+              type: string
+            title:
+              type: string
+            notice:
+              type:
+              - string
+              - 'null'
+              description: Sanitised HTML; enrolled callers only.
+        assets:
+          type: array
+          items:
+            $ref: '#/components/schemas/LessonAsset'
+        live:
+          oneOf:
+          - type: 'null'
+          - type: object
+            required:
+            - url
+            properties:
+              url:
+                type: string
+        scorm:
+          oneOf:
+          - type: 'null'
+          - type: object
+            required:
+            - launch_url
+            - version
+            - units
+            - content_origin
+            - result
+            properties:
+              launch_url:
+                type: string
+              version:
+                description: type not determinable from code
+              units:
+                type: integer
+              content_origin:
+                type: string
+              result:
+                oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/PackageResult'
+        xapi:
+          oneOf:
+          - type: 'null'
+          - type: object
+            required:
+            - launch_url
+            - kind
+            - units
+            - content_origin
+            - result
+            properties:
+              launch_url:
+                type: string
+              kind:
+                description: type not determinable from code
+              units:
+                type: integer
+              content_origin:
+                type: string
+              result:
+                oneOf:
+                - type: 'null'
+                - $ref: '#/components/schemas/PackageResult'
+        assignment:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/Assignment'
+        progress:
+          $ref: '#/components/schemas/LessonProgress'
+    PackageResult:
+      type: object
+      description: SCORM Runtime::summary (xAPI Tracker::summary is read with the same keys by the gradebook; its full shape
+        was not expanded).
+      properties:
+        complete:
+          type: boolean
+        passed:
+          type: boolean
+        failed:
+          type: boolean
+        percent:
+          type:
+          - number
+          - 'null'
+        seconds:
+          type: integer
+        attempted:
+          type: boolean
+      additionalProperties: true
+    LessonProgress:
+      type: object
+      required:
+      - watch_time
+      - last_position
+      - completed
+      properties:
+        watch_time:
+          type: integer
+          description: Accumulated seconds.
+        last_position:
+          type: integer
+          description: Seconds.
+        completed:
+          type: boolean
+    ProgressPingResult:
+      type: object
+      required:
+      - watch_time
+      - last_position
+      - required_watch_pct
+      - required_watch_seconds
+      - completed
+      - course_progress
+      properties:
+        watch_time:
+          type: integer
+        last_position:
+          type: integer
+        required_watch_pct:
+          type: integer
+        required_watch_seconds:
+          type: integer
+        completed:
+          type: boolean
+        course_progress:
+          type: number
+    LessonLock:
+      type: object
+      required:
+      - locked
+      - reason
+      - needs
+      - needs_slug
+      - completed
+      properties:
+        locked:
+          type: boolean
+        reason:
+          type: string
+          description: Arabic; empty when open.
+        needs:
+          type:
+          - string
+          - 'null'
+        needs_slug:
+          type:
+          - string
+          - 'null'
+        available_at:
+          type: string
+          format: date-time
+          description: Drip lock only.
+        code:
+          type: string
+          description: Course-level lock only (not started / expired). Values not enumerated here.
+        completed:
+          type: boolean
+    Assignment:
+      type: object
+      description: Assignments::payloadFor.
+      required:
+      - title
+      - instructions
+      - due_at
+      - max_score
+      - pass_pct
+      - max_attempts
+      - attempts_used
+      - allow_text
+      - allow_file
+      - file_types
+      - max_file_kb
+      - allow_late
+      - can_submit
+      - blocked_reason
+      - submissions
+      properties:
+        title:
+          type: string
+        instructions:
+          type:
+          - string
+          - 'null'
+        due_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        max_score:
+          type: integer
+        pass_pct:
+          type: integer
+        max_attempts:
+          type:
+          - integer
+          - 'null'
+        attempts_used:
+          type: integer
+        allow_text:
+          type: boolean
+        allow_file:
+          type: boolean
+        file_types:
+          type: array
+          items:
+            type: string
+        max_file_kb:
+          type: integer
+          const: 20480
+        allow_late:
+          type: boolean
+        can_submit:
+          type: boolean
+        blocked_reason:
+          type:
+          - string
+          - 'null'
+        submissions:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              attempt:
+                type: integer
+              content:
+                type:
+                - string
+                - 'null'
+              file:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  properties:
+                    name:
+                      type:
+                      - string
+                      - 'null'
+                    bytes:
+                      type: integer
+                    url:
+                      type: string
+                      description: /api/v1/assignment-submissions/{id}/file
+              submitted_at:
+                type:
+                - string
+                - 'null'
+                format: date-time
+              is_late:
+                type: boolean
+              status:
+                type: string
+                enum:
+                - submitted
+                - graded
+              grade:
+                type:
+                - number
+                - 'null'
+              max_score:
+                type: integer
+              passed:
+                type:
+                - boolean
+                - 'null'
+              feedback:
+                type:
+                - string
+                - 'null'
+              graded_at:
+                type:
+                - string
+                - 'null'
+                format: date-time
+    DiscussionComment:
+      type: object
+      required:
+      - id
+      - body
+      - at
+      - is_staff
+      - mine
+      - user
+      properties:
+        id:
+          type: integer
+        body:
+          type: string
+        at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        is_staff:
+          type: boolean
+        mine:
+          type: boolean
+        user:
+          type: object
+          properties:
+            name:
+              type: string
+            avatar:
+              type:
+              - string
+              - 'null'
+    DiscussionThread:
+      allOf:
+      - $ref: '#/components/schemas/DiscussionComment'
+      - type: object
+        required:
+        - resolved
+        - replies
+        properties:
+          resolved:
+            type: boolean
+          replies:
+            type: array
+            items:
+              $ref: '#/components/schemas/DiscussionComment'
+    PublicReview:
+      type: object
+      required:
+      - id
+      - rating
+      - comment
+      - author
+      - created_at
+      properties:
+        id:
+          type: integer
+        rating:
+          type: integer
+          minimum: 1
+          maximum: 5
+        comment:
+          type:
+          - string
+          - 'null'
+        author:
+          type: string
+          description: Shortened public name (CourseReview::publicName).
+        created_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    MyReview:
+      type: object
+      required:
+      - rating
+      - comment
+      - state
+      - updated_at
+      properties:
+        rating:
+          type: integer
+        comment:
+          type:
+          - string
+          - 'null'
+        state:
+          type: string
+          enum:
+          - approved
+          - pending
+        updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    CartItem:
+      type: object
+      required:
+      - type
+      - slug
+      - title
+      - quantity
+      - unit_minor
+      properties:
+        type:
+          type: string
+          const: course
+        slug:
+          type: string
+        title:
+          type: string
+        quantity:
+          type: integer
+        unit_minor:
+          type: integer
+          description: round(course.price × 100).
+    Cart:
+      type: object
+      description: CartResource.
+      required:
+      - status
+      - currency
+      - items
+      - total_minor
+      - last_activity_at
+      properties:
+        status:
+          type: string
+          enum:
+          - open
+          - converted
+          - abandoned
+        currency:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CartItem'
+        total_minor:
+          type: integer
+        last_activity_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    Order:
+      type: object
+      description: OrderResource. Amounts in minor units.
+      required:
+      - number
+      - status
+      - currency
+      - subtotal_minor
+      - discount_minor
+      - tax_minor
+      - total_minor
+      - placed_at
+      - paid_at
+      properties:
+        number:
+          type: string
+        status:
+          type: string
+          description: 'Values written by v1: pending, paid. Other values not determinable from code.'
+        currency:
+          type: string
+        subtotal_minor:
+          type: integer
+        discount_minor:
+          type: integer
+        tax_minor:
+          type: integer
+        total_minor:
+          type: integer
+        placed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        paid_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              type:
+                type: string
+              title:
+                type: string
+              quantity:
+                type: integer
+              unit_minor:
+                type: integer
+              total_minor:
+                type: integer
+        invoice:
+          type: object
+          description: Only on settleFreeOrder.
+          properties:
+            number:
+              type:
+              - string
+              - 'null'
+    Payment:
+      type: object
+      required:
+      - id
+      - reference
+      - kind
+      - title
+      - course_slug
+      - amount
+      - currency
+      - gateway
+      - stage
+      - rejection_reason
+      - created_at
+      - verified_at
+      properties:
+        id:
+          type: integer
+        reference:
+          type: string
+        kind:
+          type: string
+          description: metadata.kind; code distinguishes seats, membership, default course.
+        title:
+          type: string
+        course_slug:
+          type:
+          - string
+          - 'null'
+        amount:
+          type: number
+        currency:
+          type: string
+        gateway:
+          type: string
+          enum:
+          - chargily
+          - ccp
+          - stripe
+          - free
+        stage:
+          type: string
+          enum:
+          - paid
+          - refunded
+          - rejected
+          - failed
+          - under_review
+          - awaiting_payment
+        rejection_reason:
+          type:
+          - string
+          - 'null'
+        created_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        verified_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    Certificate:
+      type: object
+      description: CertificateResource (no signature material).
+      required:
+      - credential_uid
+      - code
+      - holder_name
+      - issued_at
+      - status
+      - verification_url
+      properties:
+        credential_uid:
+          type: string
+        code:
+          type: string
+        holder_name:
+          type: string
+        issued_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        status:
+          $ref: '#/components/schemas/CertificateStatus'
+        verification_url:
+          type: string
+        course:
+          type: object
+          properties:
+            slug:
+              type: string
+            title:
+              type: string
+    Enrollment:
+      type: object
+      description: EnrollmentResource.
+      required:
+      - public_id
+      - status
+      - progress
+      - enrolled_at
+      - completed_at
+      properties:
+        public_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/EnrollmentStatus'
+        progress:
+          type: number
+        enrolled_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        completed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        course:
+          $ref: '#/components/schemas/Course'
+        certificate:
+          oneOf:
+          - type: 'null'
+          - $ref: '#/components/schemas/Certificate'
+    EnrollmentSummary:
+      type: object
+      required:
+      - public_id
+      - status
+      - progress
+      - course
+      - enrolled_at
+      - completed_at
+      - expires_at
+      - certificate
+      properties:
+        public_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/EnrollmentStatus'
+        progress:
+          type: number
+        course:
+          type: object
+          properties:
+            title:
+              type:
+              - string
+              - 'null'
+            slug:
+              type:
+              - string
+              - 'null'
+            thumbnail:
+              type:
+              - string
+              - 'null'
+              description: Stored value, not made absolute.
+            price:
+              type: number
+        enrolled_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        completed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        expires_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        certificate:
+          type:
+          - string
+          - 'null'
+          description: Certificate code.
+    TimelineStep:
+      type: object
+      required:
+      - key
+      - label
+      - state
+      - at
+      - detail
+      properties:
+        key:
+          type: string
+          enum:
+          - registration
+          - payment
+          - learning
+          - assessment
+          - completion
+          - certificate
+        label:
+          type: string
+        state:
+          type: string
+          enum:
+          - done
+          - current
+          - pending
+          - skipped
+          - revoked
+        at:
+          description: ISO-8601 string, or for `learning` the raw lesson_progress.updated_at value; type not determinable
+            from code
+        detail:
+          type:
+          - string
+          - 'null'
+    EnrollmentTimeline:
+      type: object
+      required:
+      - public_id
+      - status
+      - progress
+      - course
+      - enrolled_at
+      - completed_at
+      - expires_at
+      - steps
+      - events
+      - certificate
+      properties:
+        public_id:
+          type: string
+        status:
+          $ref: '#/components/schemas/EnrollmentStatus'
+        progress:
+          type: number
+        course:
+          type: object
+          properties:
+            title:
+              type:
+              - string
+              - 'null'
+            slug:
+              type:
+              - string
+              - 'null'
+            thumbnail:
+              type:
+              - string
+              - 'null'
+            instructor:
+              type:
+              - string
+              - 'null'
+            price:
+              type: number
+        enrolled_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        completed_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        expires_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        steps:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimelineStep'
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              from:
+                type:
+                - string
+                - 'null'
+              to:
+                type:
+                - string
+                - 'null'
+              source:
+                type:
+                - string
+                - 'null'
+              by:
+                type: string
+              note:
+                type:
+                - string
+                - 'null'
+              at:
+                type:
+                - string
+                - 'null'
+                format: date-time
+        certificate:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              code:
+                type: string
+              url:
+                type: string
+    MyCourse:
+      type: object
+      required:
+      - enrollment_id
+      - state
+      - status
+      - progress
+      - lessons_done
+      - lessons_total
+      - enrolled_at
+      - started_at
+      - completed_at
+      - expires_at
+      - notice
+      - resume
+      - last_lesson
+      - course
+      - trainer
+      - provider
+      - mode
+      - assessment
+      - certificate
+      properties:
+        enrollment_id:
+          type: integer
+          description: Numeric row id.
+        state:
+          type: string
+          enum:
+          - not_started
+          - active
+          - completed
+          - expired
+          - cancelled
+          - pending
+        status:
+          type: string
+        progress:
+          type: number
+        lessons_done:
+          type: integer
+        lessons_total:
+          type: integer
+        enrolled_at:
+          type:
+          - string
+          - 'null'
+          format: date
+        started_at:
+          description: Raw lesson_progress.updated_at value; type not determinable from code
+        completed_at:
+          type:
+          - string
+          - 'null'
+          format: date
+        expires_at:
+          type:
+          - string
+          - 'null'
+          format: date
+        notice:
+          type:
+          - string
+          - 'null'
+          description: Sanitised HTML.
+        resume:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              slug:
+                type: string
+              title:
+                type: string
+              type:
+                $ref: '#/components/schemas/LessonType'
+        last_lesson:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              slug:
+                type:
+                - string
+                - 'null'
+              title:
+                type:
+                - string
+                - 'null'
+              position:
+                type: integer
+              at:
+                description: Raw DB timestamp; type not determinable from code
+        course:
+          type: object
+          properties:
+            title:
+              type:
+              - string
+              - 'null'
+            slug:
+              type:
+              - string
+              - 'null'
+            thumbnail:
+              type:
+              - string
+              - 'null'
+            category:
+              type:
+              - string
+              - 'null'
+            level:
+              type:
+              - string
+              - 'null'
+            language:
+              type:
+              - string
+              - 'null'
+            hours:
+              type:
+              - integer
+              - 'null'
+            price:
+              type: number
+            published:
+              type: boolean
+        trainer:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              name:
+                type: string
+              public_id:
+                type:
+                - string
+                - 'null'
+              avatar:
+                type:
+                - string
+                - 'null'
+        provider:
+          type: string
+          description: Academy name.
+        mode:
+          type: string
+          const: online
+        assessment:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              title:
+                type: string
+              pass_score:
+                type: integer
+              attempts:
+                type: integer
+              max_attempts:
+                type: integer
+              status:
+                type: string
+                enum:
+                - passed
+                - pending
+                - failed
+              best_score:
+                type:
+                - number
+                - 'null'
+        certificate:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              code:
+                type: string
+              state:
+                type: string
+                enum:
+                - revoked
+                - verified
+                - issued
+              url:
+                type: string
+    StudentDashboard:
+      type: object
+      required:
+      - user
+      - continue
+      - upcoming
+      - courses
+      - pending
+      - notifications
+      - unread
+      - certificates
+      - recommended
+      - counts
+      properties:
+        user:
+          type: object
+          properties:
+            name:
+              type: string
+            email:
+              type: string
+            public_id:
+              type:
+              - string
+              - 'null'
+        continue:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              course:
+                type: object
+                properties:
+                  title:
+                    type: string
+                  slug:
+                    type: string
+                  thumbnail:
+                    type:
+                    - string
+                    - 'null'
+                  instructor:
+                    type:
+                    - string
+                    - 'null'
+              progress:
+                type: number
+              lessons_done:
+                type: integer
+              lessons_total:
+                type: integer
+              next_lesson:
+                oneOf:
+                - type: 'null'
+                - type: object
+                  properties:
+                    title:
+                      type: string
+                    slug:
+                      type: string
+                    type:
+                      $ref: '#/components/schemas/LessonType'
+              last_activity_at:
+                type:
+                - string
+                - 'null'
+                description: Raw DB timestamp string (not ISO-8601 formatted by code).
+              status:
+                type: string
+        upcoming:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              kind:
+                type: string
+                const: live
+              title:
+                type: string
+              course:
+                type:
+                - string
+                - 'null'
+              at:
+                type:
+                - string
+                - 'null'
+                format: date-time
+              minutes:
+                type: integer
+        courses:
+          type: array
+          items:
+            type: object
+            properties:
+              enrollment_id:
+                type: integer
+              status:
+                type: string
+              progress:
+                type: number
+              enrolled_at:
+                type:
+                - string
+                - 'null'
+                format: date
+              completed_at:
+                type:
+                - string
+                - 'null'
+                format: date
+              expires_at:
+                type:
+                - string
+                - 'null'
+                format: date
+              course:
+                type: object
+                properties:
+                  title:
+                    type:
+                    - string
+                    - 'null'
+                  slug:
+                    type:
+                    - string
+                    - 'null'
+                  thumbnail:
+                    type:
+                    - string
+                    - 'null'
+                  category:
+                    type:
+                    - string
+                    - 'null'
+                  level:
+                    type:
+                    - string
+                    - 'null'
+                  hours:
+                    type:
+                    - integer
+                    - 'null'
+                  instructor:
+                    type:
+                    - string
+                    - 'null'
+              certificate:
+                type:
+                - string
+                - 'null'
+        pending:
+          type: array
+          description: Heterogeneous items discriminated by `kind`.
+          items:
+            type: object
+            required:
+            - kind
+            - label
+            - url
+            properties:
+              kind:
+                type: string
+                enum:
+                - expiry
+                - exam
+                - payment
+              label:
+                type: string
+              url:
+                type: string
+              due:
+                type: string
+                format: date-time
+                description: expiry only.
+              course:
+                type:
+                - string
+                - 'null'
+                description: exam only.
+              pass_score:
+                type: integer
+                description: exam only.
+              amount:
+                type: number
+                description: payment only.
+              currency:
+                type:
+                - string
+                - 'null'
+                description: payment only.
+        notifications:
+          type: array
+          description: Serialised UserNotification models (selected columns).
+          items:
+            type: object
+            properties:
+              id:
+                type: integer
+              type:
+                type: string
+              title:
+                type: string
+              body:
+                type:
+                - string
+                - 'null'
+              url:
+                type:
+                - string
+                - 'null'
+              read_at:
+                type:
+                - string
+                - 'null'
+                format: date-time
+              created_at:
+                type:
+                - string
+                - 'null'
+                format: date-time
+        unread:
+          type: integer
+        certificates:
+          type: array
+          items:
+            type: object
+            properties:
+              code:
+                type: string
+              course:
+                type:
+                - string
+                - 'null'
+              issued_at:
+                type:
+                - string
+                - 'null'
+                format: date
+              state:
+                type: string
+                enum:
+                - revoked
+                - verified
+                - issued
+              source:
+                type: string
+                enum:
+                - Algeria Certify
+                - academy
+              url:
+                type: string
+              verify_url:
+                type: string
+        recommended:
+          type: array
+          maxItems: 3
+          items:
+            type: object
+            properties:
+              title:
+                type: string
+              slug:
+                type: string
+              thumbnail:
+                type:
+                - string
+                - 'null'
+              category:
+                type:
+                - string
+                - 'null'
+              level:
+                type:
+                - string
+                - 'null'
+              hours:
+                type:
+                - integer
+                - 'null'
+              price:
+                type: number
+        counts:
+          type: object
+          properties:
+            active:
+              type: integer
+            completed:
+              type: integer
+            certificates:
+              type: integer
+            lessons_done:
+              type: integer
+    Transcript:
+      type: object
+      description: Course, progress, status plus Gradebook::for.
+      required:
+      - course
+      - progress
+      - status
+      - items
+      - so_far
+      - projected
+      - weight_done
+      - weight_total
+      - any
+      properties:
+        course:
+          type: object
+          properties:
+            slug:
+              type: string
+            title:
+              type: string
+        progress:
+          type: integer
+        status:
+          $ref: '#/components/schemas/EnrollmentStatus'
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              lesson_id:
+                type: integer
+              title:
+                type: string
+              kind:
+                type: string
+                enum:
+                - quiz
+                - scorm
+                - xapi
+                - assignment
+              weight:
+                description: type not determinable from code
+              percent:
+                type:
+                - number
+                - 'null'
+              display:
+                type: string
+              state:
+                type: string
+                enum:
+                - graded
+                - missing
+                - submitted
+              competency:
+                type: string
+                enum:
+                - demonstrated
+                - partial
+                - missing
+        so_far:
+          type:
+          - integer
+          - 'null'
+        projected:
+          type:
+          - integer
+          - 'null'
+        weight_done:
+          type: integer
+        weight_total:
+          type: integer
+        any:
+          type: boolean
+    StudentRequestType:
+      type: string
+      enum:
+      - course_enrollment
+      - private_training
+      - corporate_training
+      - service
+      - consultation
+      - document
+      - certificate
+      - exam_retake
+      - data_correction
+      - support
+      - other
+    StudentRequestStatus:
+      type: string
+      enum:
+      - submitted
+      - under_review
+      - info_required
+      - approved
+      - in_progress
+      - completed
+      - rejected
+      - cancelled
+    StudentRequest:
+      type: object
+      required:
+      - public_id
+      - type
+      - type_label
+      - title
+      - status
+      - status_label
+      - open
+      - course
+      - unread
+      - created_at
+      - updated_at
+      - resolved_at
+      properties:
+        public_id:
+          type: string
+        type:
+          $ref: '#/components/schemas/StudentRequestType'
+        type_label:
+          type: string
+        title:
+          type: string
+        status:
+          $ref: '#/components/schemas/StudentRequestStatus'
+        status_label:
+          type: string
+        open:
+          type: boolean
+        course:
+          oneOf:
+          - type: 'null'
+          - type: object
+            properties:
+              title:
+                type: string
+              slug:
+                type: string
+        unread:
+          type: integer
+        created_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        updated_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        resolved_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    RequestMessage:
+      type: object
+      required:
+      - id
+      - from_staff
+      - sender
+      - body
+      - at
+      properties:
+        id:
+          type: integer
+        from_staff:
+          type: boolean
+        sender:
+          type: string
+        body:
+          type: string
+        at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    StudentRequestDetail:
+      allOf:
+      - $ref: '#/components/schemas/StudentRequest'
+      - type: object
+        required:
+        - description
+        - resolution
+        - assignee
+        - can_cancel
+        - can_message
+        - timeline
+        - messages
+        properties:
+          description:
+            type: string
+          resolution:
+            type:
+            - string
+            - 'null'
+          assignee:
+            type:
+            - string
+            - 'null'
+          can_cancel:
+            type: boolean
+          can_message:
+            type: boolean
+          timeline:
+            type: array
+            items:
+              type: object
+              properties:
+                from:
+                  type:
+                  - string
+                  - 'null'
+                to:
+                  type: string
+                label:
+                  type: string
+                by:
+                  type: string
+                note:
+                  type:
+                  - string
+                  - 'null'
+                at:
+                  type:
+                  - string
+                  - 'null'
+                  format: date-time
+          messages:
+            type: array
+            items:
+              $ref: '#/components/schemas/RequestMessage'
+    WishlistType:
+      type: string
+      enum:
+      - course
+      - instructor
+      - bundle
+    WishlistItem:
+      type: object
+      required:
+      - id
+      - type
+      - saved_at
+      - subject
+      - gone
+      properties:
+        id:
+          type: integer
+        type:
+          $ref: '#/components/schemas/WishlistType'
+        saved_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+        subject:
+          description: Shape depends on `type`; null when the subject no longer exists.
+          anyOf:
+          - type: 'null'
+          - type: object
+            title: course subject
+            properties:
+              slug:
+                type: string
+              title:
+                type: string
+              thumbnail:
+                type:
+                - string
+                - 'null'
+              short_description:
+                type:
+                - string
+                - 'null'
+              category:
+                type:
+                - string
+                - 'null'
+              level:
+                type:
+                - string
+                - 'null'
+              duration_hours:
+                type:
+                - integer
+                - 'null'
+              price:
+                type: number
+              lessons_count:
+                type: integer
+              published:
+                type: boolean
+              instructor:
+                type:
+                - object
+                - 'null'
+                properties:
+                  name:
+                    type: string
+                  public_id:
+                    type:
+                    - string
+                    - 'null'
+                  avatar:
+                    type:
+                    - string
+                    - 'null'
+          - type: object
+            title: instructor subject
+            properties:
+              public_id:
+                type: string
+              name:
+                type: string
+              avatar:
+                type:
+                - string
+                - 'null'
+              bio:
+                type:
+                - string
+                - 'null'
+          - type: object
+            title: bundle subject
+            properties:
+              slug:
+                type: string
+              title:
+                type: string
+              thumbnail:
+                type:
+                - string
+                - 'null'
+        gone:
+          type: boolean
+    WishlistSaved:
+      type: object
+      required:
+      - data
+      properties:
+        data:
+          type: object
+          required:
+          - id
+          - type
+          - key
+          - saved
+          properties:
+            id:
+              type: integer
+            type:
+              $ref: '#/components/schemas/WishlistType'
+            key:
+              type: string
+            saved:
+              type: boolean
+              const: true
+    InstitutionMetrics:
+      type: object
+      description: DashboardMetrics::forRange (not wrapped).
+      required:
+      - range
+      - currency
+      - totals
+      - series
+      - top_customers
+      properties:
+        range:
+          type: object
+          properties:
+            from:
+              type: string
+              format: date
+            to:
+              type: string
+              format: date
+        currency:
+          type: string
+        totals:
+          type: object
+          properties:
+            revenue_minor:
+              type: integer
+            refunds_minor:
+              type: integer
+            net_revenue_minor:
+              type: integer
+            discount_minor:
+              type: integer
+            tax_minor:
+              type: integer
+            orders_paid:
+              type: integer
+            orders_refunded:
+              type: integer
+            enrollments_new:
+              type: integer
+            customers_new:
+              type: integer
+            certificates_issued:
+              type: integer
+        series:
+          type: array
+          items:
+            type: object
+            properties:
+              date:
+                type: string
+                format: date
+              revenue_minor:
+                type: integer
+              refunds_minor:
+                type: integer
+              net_revenue_minor:
+                description: DailyMetric::netRevenueMinor(); type not determinable from code
+              orders_paid:
+                type: integer
+              enrollments_new:
+                type: integer
+        top_customers:
+          type: array
+          items:
+            type: object
+            properties:
+              user_id:
+                type: integer
+                description: Internal numeric user id.
+              revenue_minor:
+                description: type not determinable from code (raw model attribute)
+              lifetime_value_minor:
+                description: type not determinable from code
+              orders_count:
+                description: type not determinable from code (raw model attribute)
+              first_order_at:
+                type:
+                - string
+                - 'null'
+                format: date

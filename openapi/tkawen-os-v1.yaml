@@ -1184,7 +1184,7 @@ paths:
       responses:
         '200':
           description: Updated cart. (A JsonResource around a model saved earlier in the request; Laravel may answer 201 when
-            the cart row was created in this request — status depends on `wasRecentlyCreated`, see GAPS.)
+            the cart row was created in this request — status depends on `wasRecentlyCreated`,)
           content:
             application/json:
               schema:

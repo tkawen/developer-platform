@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>@tkawen/verify demo</title>
+  <style>
+    :root { color-scheme: light; }
+    body { margin: 0; background: #F8FAFC; color: #0F172A; font-family: system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
+    main { max-width: 1040px; margin: 0 auto; padding: 24px 16px 48px; }
+    h1 { color: #1D4ED8; font-size: 24px; margin: 0 0 4px; }
+    p.lead { margin: 0 0 16px; color: #334155; }
+    .mode { background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; padding: 10px 12px; margin: 0 0 20px; font-size: 14px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+    h2 { font-size: 15px; margin: 0 0 8px; color: #334155; }
+    code { background: #E2E8F0; border-radius: 4px; padding: 1px 4px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>@tkawen/verify</h1>
+  <p class="lead">Every state of the <code>&lt;tkawen-verify&gt;</code> element, loaded from the built IIFE bundle (<code>../dist/tkawen-verify.iife.js</code>). Run <code>npm run build</code> first.</p>
+  <p class="mode" id="mode"></p>
+  <div class="grid" id="grid"></div>
+</main>
+
+<script src="../dist/tkawen-verify.iife.js"></script>
+<script>
+  // By default this page answers from canned responses copied from the real
+  // endpoint shapes (ENDPOINTS.md) and makes NO network call. Add ?live=1 to hit
+  // the real endpoints. The academy endpoint will then fail with a CORS error
+  // on any origin outside *.tkawen.com / *.tkawen.online; see ENDPOINTS.md.
+  var live = new URLSearchParams(location.search).get('live') === '1';
+  document.getElementById('mode').textContent = live
+    ? 'LIVE mode: widgets call the real endpoints.'
+    : 'Mock mode: no network calls. Append ?live=1 to the URL to call the real endpoints.';
+
+  function json(body, status) {
+    return Promise.resolve(new Response(JSON.stringify(body), { status: status || 200, headers: { 'Content-Type': 'application/json' } }));
+  }
+  var academyOk = { status: 'valid', credential_uid: '9b1f0c1e-2d4a-4c1b-9f55-2d1c1a7e0b11', issued_at: '2026-09-01T10:00:00+01:00', student_name: 'Amina Benali', course_title: 'Laravel Fundamentals' };
+  var certifyOk = { token: 'tkawen_ABC123', certificate_code: 'AC-2026-0001', fullname: 'Yacine Haddad', course: 'Barbering Level 1', issuer: { name: 'Institut Annaba', slug: 'institut-annaba', profile_url: 'https://algeriacertify.com/institut-annaba' }, issued_at: '2026-05-10T09:00:00+01:00', expires_at: null, status: 'active', is_valid: true, verify_url: 'https://algeriacertify.com/v/tkawen_ABC123' };
+
+  var demos = [
+    { title: 'Form mode (ar)', attrs: { provider: 'certify', lang: 'ar' }, mock: function () { return json(certifyOk); } },
+    { title: 'Valid, academy (en)', attrs: { code: 'TK-2026-000123', provider: 'academy', academy: 'code', lang: 'en' }, mock: function () { return json(academyOk); } },
+    { title: 'Valid, Algeria Certify (fr)', attrs: { code: 'tkawen_ABC123', provider: 'certify', lang: 'fr' }, mock: function () { return json(certifyOk); } },
+    { title: 'Revoked (ar)', attrs: { code: 'TK-2026-000124', provider: 'academy', academy: 'code', lang: 'ar' }, mock: function () { return json(Object.assign({}, academyOk, { status: 'revoked' })); } },
+    { title: 'Expired (en)', attrs: { code: 'AC-2020-0001', provider: 'certify', lang: 'en' }, mock: function () { return json(Object.assign({}, certifyOk, { status: 'expired', is_valid: false, expires_at: '2025-05-10T09:00:00+01:00' })); } },
+    { title: 'Signature failed (en)', attrs: { code: 'TK-2026-000125', provider: 'academy', academy: 'code', lang: 'en' }, mock: function () { return json(Object.assign({}, academyOk, { status: 'tampered' })); } },
+    { title: 'Not found (fr)', attrs: { code: 'TK-NOPE', provider: 'academy', academy: 'code', lang: 'fr' }, mock: function () { return json({ status: 'not_found' }, 404); } },
+    { title: 'Rate limited (ar)', attrs: { code: 'TK-2026-000126', provider: 'academy', academy: 'code', lang: 'ar' }, mock: function () { return json({ message: 'محاولات كثيرة', retry_after: 42 }, 429); } },
+    { title: 'Network / CORS error (en)', attrs: { code: 'TK-2026-000127', provider: 'academy', academy: 'code', lang: 'en' }, mock: function () { return Promise.reject(new TypeError('Failed to fetch')); } },
+    { title: 'Loading (en)', attrs: { code: 'TK-2026-000128', provider: 'academy', academy: 'code', lang: 'en' }, mock: function () { return new Promise(function () {}); } }
+  ];
+
+  var grid = document.getElementById('grid');
+  demos.forEach(function (d) {
+    var box = document.createElement('section');
+    var h = document.createElement('h2');
+    h.textContent = d.title;
+    var el = document.createElement('tkawen-verify');
+    if (!live) el.fetchImpl = d.mock; // set before connecting, so the first request uses it
+    Object.keys(d.attrs).forEach(function (k) { el.setAttribute(k, d.attrs[k]); });
+    el.addEventListener('tkawen-verify', function (e) { console.log(d.title, e.detail); });
+    box.append(h, el);
+    grid.append(box);
+  });
+</script>
+</body>
+</html>

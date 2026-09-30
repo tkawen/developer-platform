@@ -1,0 +1,65 @@
+{
+  "name": "@tkawen/os-sdk",
+  "version": "0.1.1",
+  "description": "Typed, zero-dependency client for the TKAWEN OS academy API (/api/v1), generated from the verified OpenAPI spec.",
+  "license": "MIT",
+  "author": "TKAWEN",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "SECURITY.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "generate": "openapi-typescript ../../openapi/tkawen-os-v1.yaml -o src/schema.d.ts",
+    "build": "node scripts/build.mjs && tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "keywords": [
+    "tkawen",
+    "tkawen-os",
+    "lms",
+    "sdk",
+    "openapi",
+    "academy",
+    "algeria"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "esbuild": "^0.28.2",
+    "openapi-typescript": "^7.13.0",
+    "typescript": "~5.9.3",
+    "vitest": "^5.0.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tkawen/developer-platform.git",
+    "directory": "packages/os-sdk"
+  },
+  "homepage": "https://github.com/tkawen/developer-platform/tree/main/packages/os-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/tkawen/developer-platform/issues"
+  }
+}

@@ -79,10 +79,10 @@ describe('URL building and headers', () => {
     expect(calls[0]!.headers['x-trace']).toBe('1');
   });
 
-  it('exposes every one of the 43 spec operations, grouped and flat', () => {
+  it('exposes every one of the 46 spec operations, grouped and flat', () => {
     const spec = readFileSync(new URL('../../../openapi/tkawen-os-v1.yaml', import.meta.url), 'utf8');
     const ids = [...spec.matchAll(/operationId:\s*(\w+)/g)].map((m) => m[1]!);
-    expect(ids).toHaveLength(43);
+    expect(ids).toHaveLength(46);
     const tk = createClient({ academy: 'demo', fetch: mockFetch().fetch }) as unknown as Record<string, unknown>;
     const grouped = GROUPS.flatMap((g) => Object.keys(tk[g] as object));
     expect(grouped.sort()).toEqual([...ids].sort());

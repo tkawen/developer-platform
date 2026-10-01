@@ -17,6 +17,9 @@ function fakeClient(): { [K in keyof ReadOnlyClient]: ReturnType<typeof vi.fn> }
     getMyDashboard: vi.fn(async () => ({ continue: [] })),
     listMyCourses: vi.fn(async () => ({ data: [], counts: {} })),
     getMyTranscript: vi.fn(async (slug: string) => ({ data: { slug } })),
+    getAuthenticatedCaller: vi.fn(async () => ({
+      data: { user: { id: 'usr_1', name: 'A', email: 'a@example.com', email_verified: true, role: 'student' }, token: null },
+    })),
   };
 }
 
@@ -86,6 +89,18 @@ describe('tool calls', () => {
     expect(client.getInstructor).toHaveBeenCalledWith('ins_1');
     expect(client.verifyCertificate).toHaveBeenCalledWith('TKW-1');
     expect(client.getMyTranscript).toHaveBeenCalledWith('py');
+  });
+
+  it('whoami is token-only and calls getAuthenticatedCaller', async () => {
+    const anon = await connect({ withToken: false });
+    expect((await anon.mcp.listTools()).tools.map((t) => t.name)).not.toContain('whoami');
+    const { mcp, client } = await connect({ withToken: true });
+    const tool = (await mcp.listTools()).tools.find((t) => t.name === 'whoami')!;
+    expect(tool.description).toMatch(/Pending deployment/);
+    expect(tool.annotations?.readOnlyHint).toBe(true);
+    const r = await mcp.callTool({ name: 'whoami', arguments: {} });
+    expect(client.getAuthenticatedCaller).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(text(r)).data.user.id).toBe('usr_1');
   });
 
   it('rejects invalid arguments before calling the SDK', async () => {

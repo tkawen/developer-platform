@@ -1,6 +1,6 @@
 {
   "name": "@tkawen/os-sdk",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Typed, zero-dependency client for the TKAWEN OS academy API (/api/v1), generated from the verified OpenAPI spec.",
   "license": "MIT",
   "author": "TKAWEN",

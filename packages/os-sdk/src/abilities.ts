@@ -1,0 +1,57 @@
+import type { OperationId, TokenAbility } from './types.js';
+
+/**
+ * The token ability each operation needs, from the spec's `x-token-ability` (null: none).
+ * The check applies only when a bearer token is presented: anonymous calls to public operations are unaffected,
+ * and a token without the ability gets 403 `insufficient_ability` (`TkawenInsufficientAbilityError`).
+ * Legacy tokens carry `*` and pass every check.
+ * @remarks Server enforcement is pending deployment.
+ */
+export const REQUIRED_ABILITY = {
+  listCourses: 'read',
+  getCourse: 'read',
+  listRelatedCourses: 'read',
+  listCourseReviews: 'read',
+  submitCourseReview: 'learn',
+  getMyCourseReview: 'read',
+  getCourseLocks: 'read',
+  listInstructors: 'read',
+  getInstructor: 'read',
+  getCatalogueFacets: 'read',
+  getSitemapFeed: 'read',
+  issueToken: null,
+  revokeToken: null,
+  getAuthenticatedCaller: null,
+  listAuthProviders: 'read',
+  getLesson: 'read',
+  getLessonCaptions: 'read',
+  recordLessonProgress: 'learn',
+  listLessonDiscussion: 'read',
+  postLessonDiscussion: 'learn',
+  submitLessonAssignment: 'learn',
+  downloadAssignmentSubmissionFile: 'read',
+  listPaymentMethods: 'read',
+  getCart: 'read',
+  addCartItem: 'purchase',
+  removeCartItem: 'purchase',
+  createCheckoutOrder: 'purchase',
+  settleFreeOrder: 'purchase',
+  listMyPayments: 'read',
+  listMyEnrollments: 'read',
+  listMyEnrollmentsByPublicId: 'read',
+  getMyEnrollmentTimeline: 'read',
+  getMyDashboard: 'read',
+  listMyCourses: 'read',
+  getMyTranscript: 'read',
+  listMyRequests: 'read',
+  createMyRequest: 'requests',
+  getMyRequest: 'read',
+  postMyRequestMessage: 'requests',
+  cancelMyRequest: 'requests',
+  listMyWishlist: 'read',
+  addToMyWishlist: 'learn',
+  checkMyWishlist: 'read',
+  removeFromMyWishlist: 'learn',
+  getInstitutionMetrics: 'read',
+  verifyCertificate: null,
+} as const satisfies Record<OperationId, TokenAbility | null>;

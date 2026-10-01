@@ -3,7 +3,10 @@
  *
  * The API has several error envelopes (see the spec description):
  * `{message}`, `{message, errors}` (422), `{error}`, `{message, error: "lesson_locked", needs, needs_slug}` (423),
- * `{message, retry_after}` (429) and `{status: "not_found"}` (verification). The classes below read all of them.
+ * `{message, retry_after}` (429), `{status: "not_found"}` (verification),
+ * `{message, error: "insufficient_ability", required_ability}` (403) and
+ * `{message, error: "invalid_idempotency_key" | "idempotency_request_in_progress" | "idempotency_key_reused"}`
+ * (400 / 409 / 422). The classes below read all of them.
  */
 
 export type TkawenErrorKind =
@@ -13,7 +16,14 @@ export type TkawenErrorKind =
   | 'validation'
   | 'lesson_locked'
   | 'rate_limited'
+  | 'idempotency'
   | 'http';
+
+/** Abilities a v1 token can carry (`*` is the legacy full-access ability). */
+export type TkawenTokenAbility = 'read' | 'learn' | 'purchase' | 'requests' | '*';
+
+/** The `error` codes of the spec's `IdempotencyError` body. */
+export type TkawenIdempotencyErrorCode = 'invalid_idempotency_key' | 'idempotency_request_in_progress' | 'idempotency_key_reused';
 
 export interface TkawenApiErrorInit {
   status: number;
@@ -80,6 +90,24 @@ export class TkawenForbiddenError extends TkawenApiError {
   }
 }
 
+const ABILITIES: readonly string[] = ['read', 'learn', 'purchase', 'requests', '*'];
+
+/**
+ * 403 `insufficient_ability`: the bearer token does not carry the ability this operation needs
+ * (see `REQUIRED_ABILITY`). A subclass of `TkawenForbiddenError`, so `kind` stays `'forbidden'`.
+ * @remarks Server behaviour pending deployment.
+ */
+export class TkawenInsufficientAbilityError extends TkawenForbiddenError {
+  /** The ability the operation needs, from `required_ability` (null if the server sent an unknown value). */
+  readonly requiredAbility: TkawenTokenAbility | null;
+  constructor(init: TkawenApiErrorInit) {
+    super(init);
+    this.name = 'TkawenInsufficientAbilityError';
+    const v = isObject(init.body) ? init.body['required_ability'] : undefined;
+    this.requiredAbility = typeof v === 'string' && ABILITIES.includes(v) ? (v as TkawenTokenAbility) : null;
+  }
+}
+
 /** 404: not found, or deliberately hidden (for example a lesson you are not enrolled in). */
 export class TkawenNotFoundError extends TkawenApiError {
   override readonly kind = 'not_found' as const;
@@ -138,6 +166,33 @@ export class TkawenRateLimitError extends TkawenApiError {
   }
 }
 
+/**
+ * `Idempotency-Key` refusals of `createCheckoutOrder` / `settleFreeOrder`:
+ * 400 `invalid_idempotency_key` (malformed key), 409 `idempotency_request_in_progress` (the first request with this
+ * key is still running; retry after `retryAfter` seconds), 422 `idempotency_key_reused` (the key was already used with a
+ * different body or order; use a new key).
+ * @remarks Server behaviour pending deployment.
+ */
+export class TkawenIdempotencyError extends TkawenApiError {
+  override readonly kind = 'idempotency' as const;
+  readonly code: TkawenIdempotencyErrorCode;
+  /** Seconds to wait before retrying (409 only; from `Retry-After`, null otherwise). */
+  readonly retryAfter: number | null;
+  constructor(init: TkawenApiErrorInit & { code: TkawenIdempotencyErrorCode }) {
+    super(init);
+    this.name = 'TkawenIdempotencyError';
+    this.code = init.code;
+    this.retryAfter = init.code === 'idempotency_request_in_progress' ? retryAfterOf(init.body, init.headers) : null;
+  }
+}
+
+/** The documented (status, error code) pairs of the spec's `IdempotencyError`. */
+const IDEMPOTENCY_CODES: Record<number, TkawenIdempotencyErrorCode> = {
+  400: 'invalid_idempotency_key',
+  409: 'idempotency_request_in_progress',
+  422: 'idempotency_key_reused',
+};
+
 /** Seconds to wait, from `retry_after` in the body (preferred: CORS hides the header) or `Retry-After`. */
 export function retryAfterOf(body: unknown, headers?: Headers): number | null {
   const fromBody = isObject(body) ? body['retry_after'] : undefined;
@@ -155,6 +210,10 @@ export function retryAfterOf(body: unknown, headers?: Headers): number | null {
 
 /** Builds the right subclass for a status code. */
 export function createApiError(init: TkawenApiErrorInit): TkawenApiError {
+  const code = isObject(init.body) ? init.body['error'] : undefined;
+  const idem = IDEMPOTENCY_CODES[init.status];
+  if (idem !== undefined && code === idem) return new TkawenIdempotencyError({ ...init, code: idem });
+  if (init.status === 403 && code === 'insufficient_ability') return new TkawenInsufficientAbilityError(init);
   switch (init.status) {
     case 401:
       return new TkawenUnauthorizedError(init);

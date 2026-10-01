@@ -2,8 +2,10 @@ import { HttpCore } from './http.js';
 import type {
   BodyOf,
   CartRequestOptions,
+  CheckoutRequestOptions,
   ClientOptions,
   DownloadedFile,
+  IdempotentRequestOptions,
   QueryOf,
   RequestOptions,
   ResponseBody,
@@ -12,9 +14,11 @@ import type {
 } from './types.js';
 
 /**
- * One method per operationId of `openapi/tkawen-os-v1.yaml` (43 operations), grouped by the spec's tags.
+ * One method per operationId of `openapi/tkawen-os-v1.yaml` (46 operations), grouped by the spec's tags.
  * Method names are the operationIds. Auth: "public" needs no token; "optional" reads the token when present;
- * "token" requires `token`; "staff" requires a staff token.
+ * "token" requires `token`; "staff" requires a staff token. The token ability each operation needs is in
+ * `REQUIRED_ABILITY`. Operations marked `@remarks pending deployment` exist in the spec but are not yet served
+ * in production.
  */
 function buildOperations(http: HttpCore) {
   const cartHeaders = (o?: CartRequestOptions) => ({ 'X-Cart-Key': o?.cartKey });
@@ -73,8 +77,38 @@ function buildOperations(http: HttpCore) {
 
   const auth = {
     /**
+     * Exchange e-mail and password for an expiring API token (30 days by default) with chosen abilities
+     * (`read`, `learn`, `purchase`, `requests`; default all four). Auth: public. Shares the login limiter
+     * (5/min per e-mail+IP). The password is sent once in the request body and never kept by the client.
+     * The client does not switch to the new token by itself: use `client.withToken(data.access_token)`.
+     * Errors: 422 wrong credentials or invalid abilities; 403 e-mail not verified or account suspended.
+     * Alias: `client.createToken`.
+     * @remarks pending deployment: available after the server release that ships `/api/v1/auth/token`.
+     */
+    issueToken: (body: BodyOf<'issueToken'>, options?: RequestOptions) =>
+      http.call<SuccessBody<'issueToken'>>({ operationId: 'issueToken', method: 'POST', path: '/auth/token', body, options }),
+
+    /**
+     * Revoke the token that makes this call (other tokens of the user stay valid). Resolves with no value (204).
+     * The client keeps the token afterwards; drop the client or call `setToken(undefined)`. Auth: token (no ability needed).
+     * @remarks pending deployment: available after the server release that ships `/api/v1/auth/token`.
+     */
+    revokeToken: async (options?: RequestOptions): Promise<void> => {
+      await http.call<null>({ operationId: 'revokeToken', method: 'DELETE', path: '/auth/token', options });
+    },
+
+    /**
+     * The caller (`user`) and the token in use (`token`: name, abilities, expiry; null for a cookie session).
+     * Auth: token (no ability needed). Alias: `client.getMe`.
+     * @remarks pending deployment: available after the server release that ships `/api/v1/auth/me`.
+     */
+    getAuthenticatedCaller: (options?: RequestOptions) =>
+      http.call<SuccessBody<'getAuthenticatedCaller'>>({ operationId: 'getAuthenticatedCaller', method: 'GET', path: '/auth/me', options }),
+
+    /**
      * Sign-in methods actually wired on this academy. Auth: public.
-     * @remarks /api/v1 does not issue tokens; they come from the legacy unversioned `POST /api/auth/login`.
+     * @remarks Until `issueToken` is deployed, tokens come from the legacy unversioned `POST /api/auth/login`
+     * (full access, no expiry; now answers with a `Deprecation` header).
      */
     listAuthProviders: (options?: RequestOptions) =>
       http.call<SuccessBody<'listAuthProviders'>>({ operationId: 'listAuthProviders', method: 'GET', path: '/auth/providers', options }),
@@ -195,19 +229,26 @@ function buildOperations(http: HttpCore) {
 
     /**
      * Turn the open cart into a pending order (prices and coupon recomputed server-side). Auth: token.
-     * Not idempotent: retrying creates a second pending order.
+     * Without an `Idempotency-Key`, retrying creates a second pending order. Pass `idempotencyKey` (and reuse it on
+     * retry) or set the client option `idempotency: 'auto'`; `getResponseMeta(result).replayed` tells a replay apart.
+     * Key errors throw `TkawenIdempotencyError` (400 malformed, 409 in progress, 422 reused with another body).
+     * @remarks Idempotency-Key support is pending deployment; until then the server ignores the header.
      * @remarks known server defect, fix pending deployment: without an open cart and without
      * `X-Cart-Key` the server may answer 500 instead of 404. Pass `cartKey` to avoid it.
      */
-    createCheckoutOrder: (body?: BodyOf<'createCheckoutOrder'>, options?: CartRequestOptions) =>
+    createCheckoutOrder: (body?: BodyOf<'createCheckoutOrder'>, options?: CheckoutRequestOptions) =>
       http.call<SuccessBody<'createCheckoutOrder'>>({
-        operationId: 'createCheckoutOrder', method: 'POST', path: '/checkout', body: body ?? {}, headers: cartHeaders(options), options,
+        operationId: 'createCheckoutOrder', method: 'POST', path: '/checkout', body: body ?? {}, headers: cartHeaders(options), idempotent: true, options,
       }),
 
-    /** Settle the caller's own zero-total order. Priced orders throw a `TkawenApiError` with status 402. Auth: token. */
-    settleFreeOrder: (number: string, options?: RequestOptions) =>
+    /**
+     * Settle the caller's own zero-total order. Priced orders throw a `TkawenApiError` with status 402. Auth: token.
+     * Accepts `idempotencyKey` like `createCheckoutOrder`.
+     * @remarks Idempotency-Key support is pending deployment; until then the server ignores the header.
+     */
+    settleFreeOrder: (number: string, options?: IdempotentRequestOptions) =>
       http.call<SuccessBody<'settleFreeOrder'>>({
-        operationId: 'settleFreeOrder', method: 'POST', path: '/orders/{number}/pay', pathParams: { number }, options,
+        operationId: 'settleFreeOrder', method: 'POST', path: '/orders/{number}/pay', pathParams: { number }, idempotent: true, options,
       }),
 
     /** The caller's payments with a derived stage (latest 200, not paginated). Auth: token. */
@@ -297,7 +338,11 @@ function buildOperations(http: HttpCore) {
 
   const staff = {
     /**
-     * Pre-aggregated enrolment metrics for a date range. Auth: academy staff.
+     * Metrics for a date range. Auth: academy staff. Owners get academy-wide figures (`scope: "institution"`);
+     * instructors get enrolments and certificates on their own courses (`scope: "instructor"`, no revenue).
+     * Narrow on `scope`.
+     * @remarks pending deployment: the `scope` field and the instructor shape are not yet served; production still
+     * answers every staff member with the owner shape without `scope`.
      */
     getInstitutionMetrics: (query?: QueryOf<'getInstitutionMetrics'>, options?: RequestOptions) =>
       http.call<SuccessBody<'getInstitutionMetrics'>>({
@@ -336,8 +381,16 @@ export type TkawenClient = Groups &
   Flat & {
     /** The resolved API root, e.g. `https://demo.tkawen.com/api/v1`. */
     readonly baseUrl: string;
-    /** Whether a token was configured (the token itself is never exposed). */
+    /** Whether a token is configured (the token itself is never exposed). */
     readonly authenticated: boolean;
+    /** Alias of `issueToken`. @remarks pending deployment. */
+    createToken: Groups['auth']['issueToken'];
+    /** Alias of `getAuthenticatedCaller`. @remarks pending deployment. */
+    getMe: Groups['auth']['getAuthenticatedCaller'];
+    /** Switch this client to another bearer token (or none, with `undefined`). Affects later calls only. */
+    setToken(token: string | undefined): void;
+    /** A new client with the same options and this token; the current client is unchanged. */
+    withToken(token: string | undefined): TkawenClient;
   };
 
 export const GROUPS = ['catalogue', 'auth', 'learning', 'commerce', 'me', 'requests', 'wishlist', 'staff', 'certificates'] as const;
@@ -348,6 +401,9 @@ export const GROUPS = ['catalogue', 'auth', 'learning', 'commerce', 'me', 'reque
  * ```ts
  * const tk = createClient({ academy: 'demo', locale: 'ar' });
  * const { data } = await tk.catalogue.listCourses({ per_page: 12 });
+ *
+ * const { data: issued } = await tk.issueToken({ email, password, abilities: ['read', 'learn'] });
+ * const me = tk.withToken(issued.access_token);
  * ```
  */
 export function createClient(options: ClientOptions): TkawenClient {
@@ -357,5 +413,9 @@ export function createClient(options: ClientOptions): TkawenClient {
   const client = { ...flat, ...groups } as Groups & Flat;
   Object.defineProperty(client, 'baseUrl', { value: http.baseUrl, enumerable: true });
   Object.defineProperty(client, 'authenticated', { get: () => http.authenticated, enumerable: true });
+  Object.defineProperty(client, 'createToken', { value: groups.auth.issueToken });
+  Object.defineProperty(client, 'getMe', { value: groups.auth.getAuthenticatedCaller });
+  Object.defineProperty(client, 'setToken', { value: (token: string | undefined) => http.setToken(token) });
+  Object.defineProperty(client, 'withToken', { value: (token: string | undefined) => createClient({ ...options, token }) });
   return client as TkawenClient;
 }

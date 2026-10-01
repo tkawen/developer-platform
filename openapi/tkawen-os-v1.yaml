@@ -42,7 +42,44 @@ info:
 
     per-route limiter `throttle:N,M,prefix` (alias `ThrottlePerRoute`: N attempts per M minutes, keyed by
 
-    user-or-IP + method + route URI).'
+    user-or-IP + method + route URI).
+
+
+    **Tokens** (`POST /auth/token`): a Sanctum personal access token that expires (30 days by default) and carries
+
+    abilities from the allow-list `read`, `learn`, `purchase`, `requests` (default: all four). Tokens issued by the legacy
+
+    unversioned doors (`POST /api/auth/login`, e-mail verification, staff entry) carry `*` and never expire; they keep full
+
+    access. The legacy `POST /api/auth/login` answers with `Deprecation: true` and
+
+    `Link: <https://{academy}.tkawen.com/api/v1/auth/token>; rel="successor-version"`; its behaviour is unchanged.
+
+
+    **Abilities** (`x-token-ability`, also listed as the role in each operation''s `security` requirement): every GET needs
+
+    `read`; cart, checkout and order payment need `purchase`; progress, discussion, assignments, reviews and wishlist writes
+
+    need `learn`; the learner''s requests need `requests`. The check applies only when a bearer token is presented, so
+
+    public operations stay public for anonymous callers, and a cookie session is not affected. A token without the ability
+
+    gets 403 `{"error":"insufficient_ability","required_ability":...}`. `/auth/me` and `DELETE /auth/token` need no ability.
+
+
+    **Idempotency**: `POST /checkout` and `POST /orders/{number}/pay` accept an `Idempotency-Key` header. A 2xx answer is
+
+    stored for 24 hours per user and route and replayed with `Idempotent-Replayed: true`.
+
+
+    **CORS**: for allowed origins, `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`,
+
+    `Idempotent-Replayed`, `Deprecation` and `Link` are exposed (`Access-Control-Expose-Headers`).
+
+
+    **x-status: pending-deployment** marks an operation or behaviour that exists in the kernel source but is not yet
+
+    deployed to production.'
   license:
     name: MIT
     identifier: MIT
@@ -57,7 +94,7 @@ tags:
 - name: Catalogue
   description: Public course catalogue, instructors, reviews, sitemap.
 - name: Auth
-  description: Sign-in methods available on this academy.
+  description: API tokens (issue, inspect, revoke) and the sign-in methods available on this academy.
 - name: Learning
   description: Lesson room, captions, progress, discussion, assignments, locks, transcript.
 - name: Commerce
@@ -166,6 +203,9 @@ paths:
                     $ref: '#/components/schemas/PaginationMeta'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /courses/{slug}:
     get:
       operationId: getCourse
@@ -192,6 +232,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /courses/{slug}/related:
     get:
       operationId: listRelatedCourses
@@ -221,6 +264,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /courses/{slug}/reviews:
     get:
       operationId: listCourseReviews
@@ -297,6 +343,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
     post:
       operationId: submitCourseReview
       tags:
@@ -306,7 +355,8 @@ paths:
 
         every write sets `is_approved = false`. Comment is stripped of tags and trimmed; empty becomes null.'
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - learn
       x-rate-limit:
       - api-v1
       - throttle:6,1,post-courses-slug-reviews (6 per 1 minute)
@@ -349,11 +399,13 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
-          description: Caller has no active/completed enrolment in this course.
+          description: Caller has no active/completed enrolment in this course; or the token lacks the `learn` ability (`insufficient_ability`).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MessageError'
+                anyOf:
+                - $ref: '#/components/schemas/MessageError'
+                - $ref: '#/components/schemas/InsufficientAbilityError'
               example:
                 message: التقييم متاح للمسجّلين في هذا البرنامج فقط.
         '404':
@@ -362,6 +414,7 @@ paths:
           $ref: '#/components/responses/ValidationFailed'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+      x-token-ability: learn
   /courses/{slug}/reviews/mine:
     get:
       operationId: getMyCourseReview
@@ -369,7 +422,8 @@ paths:
       - Catalogue
       summary: Whether the caller may review this course, and their existing review.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/CourseSlug'
@@ -397,6 +451,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /courses/{slug}/locks:
     get:
       operationId: getCourseLocks
@@ -405,7 +462,8 @@ paths:
       summary: Lock state and completion of every lesson for the caller's own enrolment.
       description: The course is looked up by slug without a published filter. 404 when the caller has no enrolment in it.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/CourseSlug'
@@ -456,6 +514,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /instructors:
     get:
       operationId: listInstructors
@@ -507,6 +568,9 @@ paths:
                             type: string
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /instructors/{publicId}:
     get:
       operationId: getInstructor
@@ -563,6 +627,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /catalogue/facets:
     get:
       operationId: getCatalogueFacets
@@ -611,6 +678,9 @@ paths:
                         type: integer
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /sitemap:
     get:
       operationId: getSitemapFeed
@@ -672,6 +742,152 @@ paths:
                     type: boolean
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
+  /auth/token:
+    post:
+      operationId: issueToken
+      tags:
+      - Auth
+      summary: Exchange e-mail and password for an expiring API token with chosen abilities.
+      description: 'Same credential and e-mail-verification rules as the legacy `POST /api/auth/login`, and the same limiter
+        bucket (`tenant-login`: 5/min per e-mail+IP, 60/min per IP, shared by both doors). Unlike the legacy door, a suspended
+        account is refused. Expiry: `ttl_days` in the kernel config `api_v1.token` (env `API_V1_TOKEN_TTL_DAYS`, default 30).'
+      security: []
+      x-rate-limit: api-v1 + tenant-login
+      x-status: pending-deployment
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+              - email
+              - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                device_name:
+                  type:
+                  - string
+                  - 'null'
+                  maxLength: 100
+                  description: Stored as the token name `api-v1:<device_name>` (default `client`).
+                abilities:
+                  type: array
+                  minItems: 1
+                  uniqueItems: true
+                  items:
+                    $ref: '#/components/schemas/TokenAbility'
+                  description: 'Default: all four.'
+      responses:
+        '201':
+          description: Token issued.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    $ref: '#/components/schemas/IssuedToken'
+        '403':
+          description: E-mail not verified (a fresh 6-digit code is mailed; complete it through the legacy `POST /api/auth/verify-email`),
+            or the account is suspended.
+          content:
+            application/json:
+              schema:
+                oneOf:
+                - type: object
+                  required:
+                  - verification_required
+                  - email
+                  - message
+                  properties:
+                    verification_required:
+                      type: boolean
+                      const: true
+                    email:
+                      type: string
+                    message:
+                      type: string
+                - type: object
+                  required:
+                  - message
+                  - error
+                  properties:
+                    message:
+                      type: string
+                    error:
+                      type: string
+                      const: account_suspended
+        '422':
+          description: 'Validation failure, an ability outside the allow-list, or wrong credentials (`errors.email`: «بيانات
+            الدخول غير صحيحة.», the same for an unknown e-mail).'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ValidationError'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+    delete:
+      operationId: revokeToken
+      tags:
+      - Auth
+      summary: Revoke the token that makes this call.
+      description: Other tokens of the same user stay valid. With a cookie session there is no token to revoke; the answer
+        is still 204.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      x-status: pending-deployment
+      responses:
+        '204':
+          description: Revoked.
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+  /auth/me:
+    get:
+      operationId: getAuthenticatedCaller
+      tags:
+      - Auth
+      summary: The caller and the token it is using.
+      security:
+      - sanctumToken: []
+      x-rate-limit: api-v1
+      x-status: pending-deployment
+      responses:
+        '200':
+          description: Caller.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                - data
+                properties:
+                  data:
+                    type: object
+                    required:
+                    - user
+                    - token
+                    properties:
+                      user:
+                        $ref: '#/components/schemas/ApiUser'
+                      token:
+                        $ref: '#/components/schemas/TokenInfo'
+        '401':
+          $ref: '#/components/responses/Unauthenticated'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
   /auth/providers:
     get:
       operationId: listAuthProviders
@@ -726,6 +942,9 @@ paths:
                     const: true
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /lessons/{slug}:
     get:
       operationId: getLesson
@@ -740,8 +959,8 @@ paths:
 
         Note: the course''s publication status is not checked by this handler.'
       security:
-      - {}
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/LessonSlug'
@@ -758,6 +977,9 @@ paths:
           $ref: '#/components/responses/LessonLocked'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /lessons/{slug}/captions:
     get:
       operationId: getLessonCaptions
@@ -768,8 +990,8 @@ paths:
 
         Unlike getLesson, `is_free` alone does not open this route (uses `Lesson::isOpenPreview()` = is_preview).'
       security:
-      - {}
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/LessonSlug'
@@ -831,6 +1053,9 @@ paths:
           $ref: '#/components/responses/LessonLocked'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /lessons/{slug}/progress:
     post:
       operationId: recordLessonProgress
@@ -843,7 +1068,8 @@ paths:
 
         `required_watch_pct` of its duration to have been accumulated.'
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - learn
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/LessonSlug'
@@ -882,6 +1108,9 @@ paths:
           $ref: '#/components/responses/LessonLocked'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: learn
   /lessons/{slug}/discussion:
     get:
       operationId: listLessonDiscussion
@@ -889,7 +1118,8 @@ paths:
       - Learning
       summary: Question threads under a lesson (enrolled learners and course staff).
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/LessonSlug'
@@ -920,6 +1150,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
     post:
       operationId: postLessonDiscussion
       tags:
@@ -927,7 +1160,8 @@ paths:
       summary: Ask a question, or reply to a top-level thread.
       description: A new question notifies the course instructor (else the tenant admins); a reply notifies the thread author.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - learn
       x-rate-limit:
       - api-v1
       - throttle:30,1,post-lessons-slug-discussion (30 per 1 minute)
@@ -971,6 +1205,9 @@ paths:
           $ref: '#/components/responses/ValidationFailed'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: learn
   /lessons/{slug}/assignment:
     post:
       operationId: submitLessonAssignment
@@ -983,7 +1220,8 @@ paths:
 
         20 MB) are raised as 422 validation errors on keys `assignment`, `content` or `file`.'
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - learn
       x-rate-limit:
       - api-v1
       - throttle:20,1,post-lessons-slug-assignment (20 per 1 minute)
@@ -1039,6 +1277,9 @@ paths:
           $ref: '#/components/responses/LessonLocked'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: learn
   /assignment-submissions/{submission}/file:
     get:
       operationId: downloadAssignmentSubmissionFile
@@ -1046,7 +1287,8 @@ paths:
       - Learning
       summary: Download a submission's file (owner, tenant admin, or the course's instructor).
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - name: submission
@@ -1070,6 +1312,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /payment-methods:
     get:
       operationId: listPaymentMethods
@@ -1120,6 +1365,9 @@ paths:
                               type: string
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /cart:
     get:
       operationId: getCart
@@ -1132,8 +1380,8 @@ paths:
 
         When no cart exists an unsaved empty cart is returned.'
       security:
-      - {}
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/CartKey'
@@ -1151,6 +1399,9 @@ paths:
                     $ref: '#/components/schemas/Cart'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /cart/items:
     post:
       operationId: addCartItem
@@ -1159,8 +1410,8 @@ paths:
       summary: Add a published course to the cart (or increase its quantity).
       description: Price is read from the course, never from the request. Creates the cart if needed.
       security:
-      - {}
-      - sanctumToken: []
+      - sanctumToken:
+        - purchase
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/CartKey'
@@ -1211,6 +1462,9 @@ paths:
           $ref: '#/components/responses/ValidationFailed'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: purchase
   /cart/items/{slug}:
     delete:
       operationId: removeCartItem
@@ -1219,8 +1473,8 @@ paths:
       summary: Remove a course from the cart.
       description: Creates an empty cart if none exists (unlike GET /cart). Unknown slug is a no-op.
       security:
-      - {}
-      - sanctumToken: []
+      - sanctumToken:
+        - purchase
       x-rate-limit: api-v1
       parameters:
       - name: slug
@@ -1255,6 +1509,9 @@ paths:
                     $ref: '#/components/schemas/Cart'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: purchase
   /checkout:
     post:
       operationId: createCheckoutOrder
@@ -1265,13 +1522,18 @@ paths:
 
         Coupon: active coupon by code; `percent` or fixed amount (value × 100 minor units, capped at subtotal).
 
-        Unknown coupon codes are ignored silently.'
+        Unknown coupon codes are ignored silently.
+
+        Idempotency-Key (optional, x-status pending-deployment): a retry with the same key replays the first 2xx answer; without
+        the header the behaviour is unchanged.'
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - purchase
       x-rate-limit: api-v1
       x-known-defect: Known server defect; a fix is pending deployment.
       parameters:
       - $ref: '#/components/parameters/CartKey'
+      - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: false
         content:
@@ -1296,32 +1558,65 @@ paths:
                 properties:
                   data:
                     $ref: '#/components/schemas/Order'
+          headers:
+            Idempotent-Replayed: &id001
+              schema:
+                type: string
+                const: 'true'
+              description: Present when this answer is a replay of an earlier request with the same Idempotency-Key.
+        '400':
+          description: Malformed Idempotency-Key (`invalid_idempotency_key`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdempotencyError'
         '401':
           $ref: '#/components/responses/Unauthenticated'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
         '404':
           description: No open cart (message «لا توجد سلّة مفتوحة.»), or a cart line's course no longer exists.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/MessageError'
-        '422':
-          description: Cart is empty (`abort(422, "The cart is empty.")`) or validation failure.
+        '409':
+          description: 'A request with the same Idempotency-Key is still running (`idempotency_request_in_progress`, Retry-After:
+            1).'
+          headers:
+            Retry-After:
+              schema:
+                type: integer
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MessageError'
+                $ref: '#/components/schemas/IdempotencyError'
+        '422':
+          description: Cart is empty (`abort(422, "The cart is empty.")`) or validation failure; or the Idempotency-Key was
+            already used with a different body (`idempotency_key_reused`).
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/MessageError'
+                - $ref: '#/components/schemas/IdempotencyError'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+      x-token-ability: purchase
   /orders/{number}/pay:
     post:
       operationId: settleFreeOrder
       tags:
       - Commerce
       summary: Settle the caller's own zero-total order (issues invoice, enrols, converts cart).
-      description: Orders with total_minor > 0 are refused with 402 — those are settled by the gateway or by receipt verification.
+      description: 'Orders with total_minor > 0 are refused with 402 — those are settled by the gateway or by receipt verification.
         Dispatches the `order.paid` webhook.
+
+        Idempotency-Key (optional, x-status pending-deployment): a retry with the same key replays the first 2xx answer; without
+        the header the behaviour is unchanged.'
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - purchase
       x-rate-limit: api-v1
       parameters:
       - name: number
@@ -1330,6 +1625,7 @@ paths:
         schema:
           type: string
         description: Order number.
+      - $ref: '#/components/parameters/IdempotencyKey'
       responses:
         '200':
           description: Paid order with items and invoice.
@@ -1342,6 +1638,14 @@ paths:
                 properties:
                   data:
                     $ref: '#/components/schemas/Order'
+          headers:
+            Idempotent-Replayed: *id001
+        '400':
+          description: Malformed Idempotency-Key (`invalid_idempotency_key`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdempotencyError'
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '402':
@@ -1362,18 +1666,30 @@ paths:
                     const: true
                   total_minor:
                     type: integer
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          description: Already paid.
+          description: 'Already paid; or a request with the same Idempotency-Key is still running (`idempotency_request_in_progress`,
+            Retry-After: 1).'
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MessageError'
+                anyOf:
+                - $ref: '#/components/schemas/MessageError'
+                - $ref: '#/components/schemas/IdempotencyError'
               example:
                 message: This order is already paid.
+        '422':
+          description: The Idempotency-Key was already used with a different order or body (`idempotency_key_reused`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IdempotencyError'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+      x-token-ability: purchase
   /me/payments:
     get:
       operationId: listMyPayments
@@ -1381,7 +1697,8 @@ paths:
       - Commerce
       summary: The caller's payments with a derived stage (latest 200).
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       responses:
         '200':
@@ -1401,6 +1718,9 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /me/enrollments:
     get:
       operationId: listMyEnrollments
@@ -1408,7 +1728,8 @@ paths:
       - Me
       summary: The caller's enrolments with course and certificate (EnrollmentResource).
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       responses:
         '200':
@@ -1428,6 +1749,9 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /me/enrollments/list:
     get:
       operationId: listMyEnrollmentsByPublicId
@@ -1435,7 +1759,8 @@ paths:
       - Me
       summary: The caller's enrolments by public id (compact rows).
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       responses:
         '200':
@@ -1455,6 +1780,9 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /me/enrollments/{publicId}:
     get:
       operationId: getMyEnrollmentTimeline
@@ -1462,7 +1790,8 @@ paths:
       - Me
       summary: One enrolment with its step timeline and status events.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       x-known-defect: Known server defect; a fix is pending deployment.
       parameters:
@@ -1491,6 +1820,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /me/dashboard:
     get:
       operationId: getMyDashboard
@@ -1498,7 +1830,8 @@ paths:
       - Me
       summary: Student portal home — continue, pending, earned, next.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       responses:
         '200':
@@ -1511,6 +1844,9 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /me/courses:
     get:
       operationId: listMyCourses
@@ -1518,7 +1854,8 @@ paths:
       - Me
       summary: The caller's courses with a derived display state, resume point, assessment and certificate.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       responses:
         '200':
@@ -1564,6 +1901,9 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /me/transcript/{slug}:
     get:
       operationId: getMyTranscript
@@ -1571,7 +1911,8 @@ paths:
       - Learning
       summary: Weighted gradebook for the caller's enrolment in a course.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/CourseSlug'
@@ -1593,6 +1934,9 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /me/requests:
     get:
       operationId: listMyRequests
@@ -1600,7 +1944,8 @@ paths:
       - Requests
       summary: The caller's requests, with counts and the type/status dictionaries.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       responses:
         '200':
@@ -1640,13 +1985,17 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
     post:
       operationId: createMyRequest
       tags:
       - Requests
       summary: File a request to the academy (notifies tenant admins and the course instructor).
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - requests
       x-rate-limit:
       - api-v1
       - throttle:10,10,post-me-requests (10 per 10 minutes)
@@ -1701,6 +2050,9 @@ paths:
                 - $ref: '#/components/schemas/ErrorField'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: requests
   /me/requests/{publicId}:
     get:
       operationId: getMyRequest
@@ -1708,7 +2060,8 @@ paths:
       - Requests
       summary: One request with its timeline and message thread. Marks staff replies read.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/RequestPublicId'
@@ -1732,6 +2085,7 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+      x-token-ability: read
   /me/requests/{publicId}/messages:
     post:
       operationId: postMyRequestMessage
@@ -1739,7 +2093,8 @@ paths:
       - Requests
       summary: Reply in a request's thread (open requests only).
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - requests
       x-rate-limit:
       - api-v1
       - throttle:30,10,post-me-requests-publicid-messages (30 per 10 minutes)
@@ -1788,6 +2143,7 @@ paths:
           $ref: '#/components/responses/ValidationFailed'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+      x-token-ability: requests
   /me/requests/{publicId}/cancel:
     post:
       operationId: cancelMyRequest
@@ -1795,7 +2151,8 @@ paths:
       - Requests
       summary: Withdraw a request (only while submitted, under_review or info_required).
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - requests
       x-rate-limit: api-v1
       parameters:
       - $ref: '#/components/parameters/RequestPublicId'
@@ -1819,6 +2176,7 @@ paths:
           $ref: '#/components/responses/NotFound'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+      x-token-ability: requests
   /me/wishlist:
     get:
       operationId: listMyWishlist
@@ -1826,7 +2184,8 @@ paths:
       - Wishlist
       summary: Saved courses, instructors and bundles; a vanished subject is reported as gone.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       responses:
         '200':
@@ -1846,13 +2205,17 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
     post:
       operationId: addToMyWishlist
       tags:
       - Wishlist
       summary: Save a course (slug), instructor (public_id) or bundle (slug). Idempotent.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - learn
       x-rate-limit:
       - api-v1
       - throttle:60,1,post-me-wishlist (60 per 1 minute)
@@ -1896,6 +2259,9 @@ paths:
           $ref: '#/components/responses/ValidationFailed'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: learn
   /me/wishlist/check/{type}/{key}:
     get:
       operationId: checkMyWishlist
@@ -1903,7 +2269,8 @@ paths:
       - Wishlist
       summary: Is this subject in the caller's wishlist.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - name: type
@@ -1938,6 +2305,9 @@ paths:
           $ref: '#/components/responses/Unauthenticated'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+        '403':
+          $ref: '#/components/responses/InsufficientAbility'
+      x-token-ability: read
   /me/wishlist/{type}/{key}:
     delete:
       operationId: removeFromMyWishlist
@@ -1945,7 +2315,8 @@ paths:
       - Wishlist
       summary: Remove a saved subject. Absent item answers 200 saved=false.
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - learn
       x-rate-limit: api-v1
       parameters:
       - name: type
@@ -1982,15 +2353,19 @@ paths:
           $ref: '#/components/responses/Forbidden'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+      x-token-ability: learn
   /dashboard/metrics:
     get:
       operationId: getInstitutionMetrics
       tags:
       - Staff
-      summary: Pre-aggregated revenue/enrolment metrics for a date range (staff only).
-      description: Academy staff only.
+      summary: 'Metrics for a date range: academy-wide for owners, own-courses activity for instructors (staff only).'
+      description: 'Academy staff only. Owners (tenant_admin, super_admin) get the pre-aggregated academy-wide figures (`scope:
+        institution`). Instructors get new enrolments and certificates issued on their own courses (`scope: instructor`),
+        with no revenue and no customer ids.'
       security:
-      - sanctumToken: []
+      - sanctumToken:
+        - read
       x-rate-limit: api-v1
       parameters:
       - name: from
@@ -2022,15 +2397,19 @@ paths:
         '401':
           $ref: '#/components/responses/Unauthenticated'
         '403':
-          description: Not staff (`هذه اللوحة لطاقم المعهد فقط.`) or banned (`الحساب موقوف.`).
+          description: Not staff (`هذه اللوحة لطاقم المعهد فقط.`) or banned (`الحساب موقوف.`); or the token lacks the `read`
+            ability (`insufficient_ability`).
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/MessageError'
+                anyOf:
+                - $ref: '#/components/schemas/MessageError'
+                - $ref: '#/components/schemas/InsufficientAbilityError'
         '422':
           $ref: '#/components/responses/ValidationFailed'
         '429':
           $ref: '#/components/responses/TooManyRequests'
+      x-token-ability: read
   /verify/{code}:
     get:
       operationId: verifyCertificate
@@ -2099,9 +2478,10 @@ components:
       scheme: bearer
       description: 'Laravel Sanctum personal access token (`Authorization: Bearer <id>|<token>`), tenant-scoped.
 
-        Issued by legacy unversioned routes (e.g. `POST /api/auth/login`), not by /api/v1.
+        Issued by `POST /auth/token` (expires, carries abilities) or by the legacy unversioned routes (e.g. `POST /api/auth/login`:
+        abilities `*`, no expiry).
 
-        No expiry is configured (no ; tokens created without expires_at).'
+        The role list in an operation''s security requirement is the token ability it needs (see `x-token-ability`).'
   parameters:
     CourseSlug:
       name: slug
@@ -2132,6 +2512,19 @@ components:
         type: string
         maxLength: 64
       description: Guest cart key (truncated to 64 chars). Falls back to the `tkawen_cart_key` cookie.
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+        pattern: ^[\x21-\x7E]+$
+      description: Optional. 1–255 visible ASCII characters. Scoped to the caller and the route; kept 24 hours. A retry with
+        the same key and the same body replays the first 2xx answer instead of running again. Non-2xx answers are not stored,
+        so the key can be retried.
+      x-status: pending-deployment
   responses:
     Unauthenticated:
       description: No or invalid bearer token (Laravel AuthenticationException rendered as JSON; `api/*` always gets JSON).
@@ -2142,11 +2535,14 @@ components:
           example:
             message: Unauthenticated.
     Forbidden:
-      description: Policy refused (Gate::authorize → AuthorizationException).
+      description: Policy refused (Gate::authorize → AuthorizationException); or the bearer token lacks the ability the operation
+        needs (`insufficient_ability`, see `x-token-ability`).
       content:
         application/json:
           schema:
-            $ref: '#/components/schemas/MessageError'
+            anyOf:
+            - $ref: '#/components/schemas/MessageError'
+            - $ref: '#/components/schemas/InsufficientAbilityError'
     NotFound:
       description: Model not found, or deliberately hidden (no enrolment / not addressable). Framework JSON error.
       content:
@@ -2173,6 +2569,18 @@ components:
           schema:
             type: integer
           description: Seconds until retry (also carried as `retry_after`).
+        X-RateLimit-Limit:
+          schema:
+            type: integer
+          description: Requests allowed in the window.
+        X-RateLimit-Remaining:
+          schema:
+            type: integer
+          description: Requests left in the window (0).
+        X-RateLimit-Reset:
+          schema:
+            type: integer
+          description: Unix time when the window resets.
       content:
         application/json:
           schema:
@@ -2180,6 +2588,16 @@ components:
           example:
             message: محاولات كثيرة في وقت قصير. انتظر 42 ثانية ثم أعد المحاولة.
             retry_after: 42
+    InsufficientAbility:
+      description: The bearer token does not carry the ability this operation needs.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/InsufficientAbilityError'
+          example:
+            message: This token does not carry the «purchase» ability.
+            error: insufficient_ability
+            required_ability: purchase
   schemas:
     MessageError:
       type: object
@@ -4339,16 +4757,148 @@ components:
             saved:
               type: boolean
               const: true
-    InstitutionMetrics:
+    InsufficientAbilityError:
       type: object
-      description: DashboardMetrics::forRange (not wrapped).
       required:
+      - message
+      - error
+      - required_ability
+      properties:
+        message:
+          type: string
+        error:
+          type: string
+          const: insufficient_ability
+        required_ability:
+          type: string
+          enum:
+          - read
+          - learn
+          - purchase
+          - requests
+          - '*'
+      x-status: pending-deployment
+    IdempotencyError:
+      type: object
+      required:
+      - message
+      - error
+      properties:
+        message:
+          type: string
+        error:
+          type: string
+          enum:
+          - invalid_idempotency_key
+          - idempotency_request_in_progress
+          - idempotency_key_reused
+      x-status: pending-deployment
+    ApiUser:
+      type: object
+      required:
+      - id
+      - name
+      - email
+      - email_verified
+      - role
+      properties:
+        id:
+          type: string
+          description: Public id (`usr_…`); never the row id.
+          examples:
+          - usr_01j9z8x7w6v5t4s3r2q1p0n9m8
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        avatar:
+          type:
+          - string
+          - 'null'
+        email_verified:
+          type: boolean
+        role:
+          type: string
+          examples:
+          - student
+          - instructor
+          - tenant_admin
+    TokenAbility:
+      type: string
+      enum:
+      - read
+      - learn
+      - purchase
+      - requests
+    IssuedToken:
+      type: object
+      required:
+      - token_type
+      - access_token
+      - expires_at
+      - abilities
+      - user
+      properties:
+        token_type:
+          type: string
+          const: Bearer
+        access_token:
+          type: string
+          description: 'Shown once. Send as `Authorization: Bearer <access_token>`.'
+        expires_at:
+          type: string
+          format: date-time
+        abilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/TokenAbility'
+        user:
+          $ref: '#/components/schemas/ApiUser'
+    TokenInfo:
+      type:
+      - object
+      - 'null'
+      description: '`null` when the caller is signed in by cookie session rather than a token.'
+      required:
+      - name
+      - abilities
+      - expires_at
+      - last_used_at
+      properties:
+        name:
+          type: string
+          description: '`api-v1:<device_name>` for v1 tokens; `student-storefront` etc. for legacy ones.'
+        abilities:
+          type: array
+          items:
+            type: string
+          description: '`["*"]` for legacy tokens.'
+        expires_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+          description: '`null` for legacy tokens.'
+        last_used_at:
+          type:
+          - string
+          - 'null'
+          format: date-time
+    InstitutionMetricsOwner:
+      type: object
+      description: 'Owners (tenant_admin, super_admin): DashboardMetrics::forRange, academy-wide, with `scope: institution`.'
+      required:
+      - scope
       - range
       - currency
       - totals
       - series
       - top_customers
       properties:
+        scope:
+          type: string
+          const: institution
         range:
           type: object
           properties:
@@ -4420,3 +4970,69 @@ components:
                 - string
                 - 'null'
                 format: date
+    InstitutionMetricsInstructor:
+      type: object
+      description: 'Instructors: activity on their own courses only. No money figure and no customer id (course revenue is
+        the institution''s). `series` lists only days with activity, ascending. `currency` is ignored.'
+      required:
+      - scope
+      - range
+      - courses
+      - totals
+      - series
+      properties:
+        scope:
+          type: string
+          const: instructor
+        range:
+          type: object
+          required:
+          - from
+          - to
+          properties:
+            from:
+              type: string
+              format: date
+            to:
+              type: string
+              format: date
+        courses:
+          type: integer
+          description: Number of courses the instructor teaches.
+        totals:
+          type: object
+          required:
+          - enrollments_new
+          - certificates_issued
+          properties:
+            enrollments_new:
+              type: integer
+            certificates_issued:
+              type: integer
+        series:
+          type: array
+          items:
+            type: object
+            required:
+            - date
+            - enrollments_new
+            - certificates_issued
+            properties:
+              date:
+                type: string
+                format: date
+              enrollments_new:
+                type: integer
+              certificates_issued:
+                type: integer
+    InstitutionMetrics:
+      description: Shape depends on the caller's role, keyed by `scope` (KF-32, x-status pending-deployment; production still
+        answers every staff member with the owner shape without `scope`).
+      oneOf:
+      - $ref: '#/components/schemas/InstitutionMetricsOwner'
+      - $ref: '#/components/schemas/InstitutionMetricsInstructor'
+      discriminator:
+        propertyName: scope
+        mapping:
+          institution: '#/components/schemas/InstitutionMetricsOwner'
+          instructor: '#/components/schemas/InstitutionMetricsInstructor'

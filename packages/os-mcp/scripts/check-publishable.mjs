@@ -1,5 +1,5 @@
 // Refuses to publish while @tkawen/os-sdk (or any dependency) points at a local path.
-// Before the first publish: publish @tkawen/os-sdk, then set "@tkawen/os-sdk": "^0.1.0".
+// Publish @tkawen/os-sdk first, then keep "@tkawen/os-sdk" on a registry range (currently "^0.2.0").
 import { readFileSync } from 'node:fs';
 
 const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));

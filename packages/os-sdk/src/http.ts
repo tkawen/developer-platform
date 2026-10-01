@@ -1,5 +1,5 @@
 import { createApiError, retryAfterOf } from './errors.js';
-import type { ClientOptions, FetchLike, RequestOptions } from './types.js';
+import type { ClientOptions, FetchLike, IdempotentRequestOptions, RateLimitInfo, RequestOptions, ResponseMeta } from './types.js';
 
 export const ROOT_DOMAIN = 'tkawen.com';
 const ACADEMY_SLUG = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
@@ -25,6 +25,49 @@ export function resolveBaseUrl(academy: string, baseUrl?: string): string {
   return `https://${academy.toLowerCase()}.${ROOT_DOMAIN}/api/v1`;
 }
 
+/** `Idempotency-Key` syntax from the spec: 1-255 visible ASCII characters. */
+const IDEMPOTENCY_KEY = /^[!-~]{1,255}$/;
+
+const META = new WeakMap<object, ResponseMeta>();
+
+/**
+ * Transport metadata of a successful answer returned by any method: HTTP status, whether it was an
+ * idempotent replay (`Idempotent-Replayed: true`), the `Idempotency-Key` sent, and the `X-RateLimit-*` headers.
+ * Returns `undefined` for values the SDK did not produce (and for empty 204 answers).
+ *
+ * ```ts
+ * const order = await tk.createCheckoutOrder({}, { idempotencyKey: key });
+ * if (getResponseMeta(order)?.replayed) console.log('same order as the first attempt');
+ * ```
+ */
+export function getResponseMeta(result: unknown): ResponseMeta | undefined {
+  return typeof result === 'object' && result !== null ? META.get(result) : undefined;
+}
+
+function intHeader(h: Headers, name: string): number | null {
+  const v = h.get(name);
+  if (v == null || v.trim() === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function rateLimitOf(h: Headers): RateLimitInfo | null {
+  const info = {
+    limit: intHeader(h, 'x-ratelimit-limit'),
+    remaining: intHeader(h, 'x-ratelimit-remaining'),
+    reset: intHeader(h, 'x-ratelimit-reset'),
+  };
+  return info.limit === null && info.remaining === null && info.reset === null ? null : info;
+}
+
+function randomUuid(): string {
+  const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+  if (typeof c?.randomUUID !== 'function') {
+    throw new TypeError("idempotency: 'auto' needs crypto.randomUUID (Node >= 19 or a browser); pass a key generator function instead");
+  }
+  return c.randomUUID();
+}
+
 type QueryValue = string | number | boolean | null | undefined;
 
 export interface CallSpec {
@@ -41,6 +84,8 @@ export interface CallSpec {
   acceptStatuses?: number[];
   /** Return the raw Response instead of parsing JSON. */
   raw?: boolean;
+  /** The operation accepts `Idempotency-Key` (reads `options.idempotencyKey` and the client's `idempotency`). */
+  idempotent?: boolean;
   options?: RequestOptions | undefined;
 }
 
@@ -95,17 +140,18 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 export class HttpCore {
   readonly baseUrl: string;
-  readonly #token: string | undefined;
+  #token: string | undefined;
   readonly #fetch: FetchLike;
   readonly #locale: string | undefined;
   readonly #retry429: boolean;
   readonly #maxWait: number;
   readonly #headers: Record<string, string>;
+  readonly #idempotency: 'off' | 'auto' | (() => string);
 
   constructor(opts: ClientOptions) {
     if (!opts || typeof opts !== 'object') throw new TypeError('createClient(options) requires an options object');
     this.baseUrl = resolveBaseUrl(opts.academy, opts.baseUrl);
-    this.#token = typeof opts.token === 'string' && opts.token.trim() !== '' ? opts.token.trim() : undefined;
+    this.setToken(opts.token);
     const f = opts.fetch ?? (typeof fetch === 'function' ? (fetch as FetchLike) : undefined);
     if (!f) throw new TypeError('No fetch available: pass options.fetch (Node >= 18 has a global fetch)');
     // Call through a wrapper so a bare global fetch is never invoked with the wrong `this`.
@@ -113,6 +159,11 @@ export class HttpCore {
     this.#locale = opts.locale && opts.locale.trim() !== '' ? opts.locale.trim() : undefined;
     this.#retry429 = opts.retry?.on429 === true;
     this.#maxWait = opts.retry?.maxWaitSeconds ?? 60;
+    const idem = opts.idempotency ?? 'off';
+    if (idem !== 'off' && idem !== 'auto' && typeof idem !== 'function') {
+      throw new TypeError("idempotency must be 'off', 'auto' or a function returning a key");
+    }
+    this.#idempotency = idem;
     this.#headers = {};
     for (const [k, v] of Object.entries(opts.headers ?? {})) {
       if (k.toLowerCase() !== 'authorization') this.#headers[k] = v;
@@ -124,6 +175,23 @@ export class HttpCore {
     return this.#token !== undefined;
   }
 
+  /** Replace (or clear, with `undefined`/empty) the bearer token used by later calls. */
+  setToken(token: string | undefined | null): void {
+    this.#token = typeof token === 'string' && token.trim() !== '' ? token.trim() : undefined;
+  }
+
+  #idempotencyKey(options: IdempotentRequestOptions | undefined): string | undefined {
+    let key = options?.idempotencyKey;
+    if (key === undefined) {
+      if (this.#idempotency === 'off') return undefined;
+      key = this.#idempotency === 'auto' ? randomUuid() : this.#idempotency();
+    }
+    if (typeof key !== 'string' || !IDEMPOTENCY_KEY.test(key)) {
+      throw new TypeError('Idempotency-Key must be 1-255 visible ASCII characters (no spaces)');
+    }
+    return key;
+  }
+
   async call<T>(spec: CallSpec): Promise<T> {
     const url = buildUrl(this.baseUrl, spec.path, spec.pathParams, spec.query);
     const headers: Record<string, string> = { Accept: 'application/json', ...this.#headers };
@@ -133,6 +201,18 @@ export class HttpCore {
     }
     for (const [k, v] of Object.entries(spec.options?.headers ?? {})) {
       if (k.toLowerCase() !== 'authorization') headers[k] = v;
+    }
+    if (spec.idempotent) {
+      const opts = spec.options as IdempotentRequestOptions | undefined;
+      const manual = Object.keys(headers).filter((k) => k.toLowerCase() === 'idempotency-key');
+      // An explicit `idempotencyKey` wins over a raw header; a raw header wins over the automatic key.
+      if (opts?.idempotencyKey !== undefined || manual.length === 0) {
+        const key = this.#idempotencyKey(opts);
+        if (key !== undefined) {
+          for (const k of manual) delete headers[k];
+          headers['Idempotency-Key'] = key;
+        }
+      }
     }
     if (this.#token) headers['Authorization'] = `Bearer ${this.#token}`;
 
@@ -163,7 +243,19 @@ export class HttpCore {
     const ok = (res.status >= 200 && res.status < 300) || (spec.acceptStatuses?.includes(res.status) ?? false);
     if (ok && spec.raw) return res as unknown as T;
     const parsed = await readBody(res);
-    if (ok) return parsed as T;
+    if (ok) {
+      if (typeof parsed === 'object' && parsed !== null) {
+        const sentKey = Object.entries(headers).find(([k]) => k.toLowerCase() === 'idempotency-key')?.[1] ?? null;
+        META.set(parsed, {
+          status: res.status,
+          replayed: (res.headers.get('idempotent-replayed') ?? '').trim().toLowerCase() === 'true',
+          idempotencyKey: sentKey,
+          rateLimit: rateLimitOf(res.headers),
+          headers: res.headers,
+        });
+      }
+      return parsed as T;
+    }
     throw createApiError({
       status: res.status,
       body: parsed,

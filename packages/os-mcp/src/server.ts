@@ -4,7 +4,7 @@ import { isTkawenApiError, type TkawenClient } from '@tkawen/os-sdk';
 import { z } from 'zod';
 
 export const SERVER_NAME = 'tkawen-os';
-export const SERVER_VERSION = '0.1.0';
+export const SERVER_VERSION = '0.2.0';
 
 /** Tools available without a token (public operations of the spec). */
 export const PUBLIC_TOOLS = [
@@ -17,7 +17,7 @@ export const PUBLIC_TOOLS = [
 ] as const;
 
 /** Tools registered only when TKAWEN_TOKEN is set (learner's own data). */
-export const TOKEN_TOOLS = ['get_my_dashboard', 'list_my_courses', 'get_my_transcript'] as const;
+export const TOKEN_TOOLS = ['get_my_dashboard', 'list_my_courses', 'get_my_transcript', 'whoami'] as const;
 
 /** The subset of the SDK client this server calls, all read-only GET operations. */
 export type ReadOnlyClient = Pick<
@@ -31,6 +31,7 @@ export type ReadOnlyClient = Pick<
   | 'getMyDashboard'
   | 'listMyCourses'
   | 'getMyTranscript'
+  | 'getAuthenticatedCaller'
 >;
 
 export interface CreateServerOptions {
@@ -180,6 +181,19 @@ export function createServer(opts: CreateServerOptions): McpServer {
         annotations: READ_ONLY,
       },
       ({ slug }) => run(() => client.getMyTranscript(slug)),
+    );
+
+    server.registerTool(
+      'whoami',
+      {
+        title: 'Who am I',
+        description:
+          `The account behind the configured token (public id, name, e-mail, role) and the token's abilities and expiry ` +
+          `(never the token itself). Pending deployment: until the academy's server release ships /api/v1/auth/me, this tool ` +
+          `returns an API error. ${mine}`,
+        annotations: READ_ONLY,
+      },
+      () => run(() => client.getAuthenticatedCaller()),
     );
   }
 

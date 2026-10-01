@@ -8,12 +8,15 @@ export {
   TkawenValidationError,
   TkawenLessonLockedError,
   TkawenRateLimitError,
+  TkawenInsufficientAbilityError,
+  TkawenIdempotencyError,
   createApiError,
   isTkawenApiError,
   retryAfterOf,
 } from './errors.js';
-export type { TkawenErrorKind, TkawenApiErrorInit } from './errors.js';
-export { buildUrl, resolveBaseUrl } from './http.js';
+export type { TkawenErrorKind, TkawenApiErrorInit, TkawenTokenAbility, TkawenIdempotencyErrorCode } from './errors.js';
+export { buildUrl, resolveBaseUrl, getResponseMeta } from './http.js';
+export { REQUIRED_ABILITY } from './abilities.js';
 export type * from './types.js';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0';

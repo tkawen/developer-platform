@@ -191,6 +191,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Exchange e-mail and password for an expiring API token with chosen abilities.
+         * @description Same credential and e-mail-verification rules as the legacy `POST /api/auth/login`, and the same limiter bucket (`tenant-login`: 5/min per e-mail+IP, 60/min per IP, shared by both doors). Unlike the legacy door, a suspended account is refused. Expiry: `ttl_days` in the kernel config `api_v1.token` (env `API_V1_TOKEN_TTL_DAYS`, default 30).
+         */
+        post: operations["issueToken"];
+        /**
+         * Revoke the token that makes this call.
+         * @description Other tokens of the same user stay valid. With a cookie session there is no token to revoke; the answer is still 204.
+         */
+        delete: operations["revokeToken"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** The caller and the token it is using. */
+        get: operations["getAuthenticatedCaller"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/providers": {
         parameters: {
             query?: never;
@@ -431,6 +472,7 @@ export interface paths {
          * @description Uses the caller's open cart; if none, claims an open guest cart by `X-Cart-Key` (or the cart cookie).
          *     Coupon: active coupon by code; `percent` or fixed amount (value × 100 minor units, capped at subtotal).
          *     Unknown coupon codes are ignored silently.
+         *     Idempotency-Key (optional, x-status pending-deployment): a retry with the same key replays the first 2xx answer; without the header the behaviour is unchanged.
          */
         post: operations["createCheckoutOrder"];
         delete?: never;
@@ -451,6 +493,7 @@ export interface paths {
         /**
          * Settle the caller's own zero-total order (issues invoice, enrols, converts cart).
          * @description Orders with total_minor > 0 are refused with 402 — those are settled by the gateway or by receipt verification. Dispatches the `order.paid` webhook.
+         *     Idempotency-Key (optional, x-status pending-deployment): a retry with the same key replays the first 2xx answer; without the header the behaviour is unchanged.
          */
         post: operations["settleFreeOrder"];
         delete?: never;
@@ -707,8 +750,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Pre-aggregated revenue/enrolment metrics for a date range (staff only).
-         * @description Academy staff only.
+         * Metrics for a date range: academy-wide for owners, own-courses activity for instructors (staff only).
+         * @description Academy staff only. Owners (tenant_admin, super_admin) get the pre-aggregated academy-wide figures (`scope: institution`). Instructors get new enrolments and certificates issued on their own courses (`scope: instructor`), with no revenue and no customer ids.
          */
         get: operations["getInstitutionMetrics"];
         put?: never;
@@ -1521,8 +1564,69 @@ export interface components {
                 saved: true;
             };
         };
-        /** @description DashboardMetrics::forRange (not wrapped). */
-        InstitutionMetrics: {
+        InsufficientAbilityError: {
+            message: string;
+            /** @constant */
+            error: "insufficient_ability";
+            /** @enum {string} */
+            required_ability: "read" | "learn" | "purchase" | "requests" | "*";
+        };
+        IdempotencyError: {
+            message: string;
+            /** @enum {string} */
+            error: "invalid_idempotency_key" | "idempotency_request_in_progress" | "idempotency_key_reused";
+        };
+        ApiUser: {
+            /**
+             * @description Public id (`usr_…`); never the row id.
+             * @example usr_01j9z8x7w6v5t4s3r2q1p0n9m8
+             */
+            id: string;
+            name: string;
+            /** Format: email */
+            email: string;
+            avatar?: string | null;
+            email_verified: boolean;
+            /**
+             * @example student
+             * @example instructor
+             * @example tenant_admin
+             */
+            role: string;
+        };
+        /** @enum {string} */
+        TokenAbility: "read" | "learn" | "purchase" | "requests";
+        IssuedToken: {
+            /** @constant */
+            token_type: "Bearer";
+            /** @description Shown once. Send as `Authorization: Bearer <access_token>`. */
+            access_token: string;
+            /** Format: date-time */
+            expires_at: string;
+            abilities: components["schemas"]["TokenAbility"][];
+            user: components["schemas"]["ApiUser"];
+        };
+        /** @description `null` when the caller is signed in by cookie session rather than a token. */
+        TokenInfo: {
+            /** @description `api-v1:<device_name>` for v1 tokens; `student-storefront` etc. for legacy ones. */
+            name: string;
+            /** @description `["*"]` for legacy tokens. */
+            abilities: string[];
+            /**
+             * Format: date-time
+             * @description `null` for legacy tokens.
+             */
+            expires_at: string | null;
+            /** Format: date-time */
+            last_used_at: string | null;
+        } | null;
+        /** @description Owners (tenant_admin, super_admin): DashboardMetrics::forRange, academy-wide, with `scope: institution`. */
+        InstitutionMetricsOwner: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            scope: "institution";
             range: {
                 /** Format: date */
                 from?: string;
@@ -1565,6 +1669,34 @@ export interface components {
                 first_order_at?: string | null;
             }[];
         };
+        /** @description Instructors: activity on their own courses only. No money figure and no customer id (course revenue is the institution's). `series` lists only days with activity, ascending. `currency` is ignored. */
+        InstitutionMetricsInstructor: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            scope: "instructor";
+            range: {
+                /** Format: date */
+                from: string;
+                /** Format: date */
+                to: string;
+            };
+            /** @description Number of courses the instructor teaches. */
+            courses: number;
+            totals: {
+                enrollments_new: number;
+                certificates_issued: number;
+            };
+            series: {
+                /** Format: date */
+                date: string;
+                enrollments_new: number;
+                certificates_issued: number;
+            }[];
+        };
+        /** @description Shape depends on the caller's role, keyed by `scope` (KF-32, x-status pending-deployment; production still answers every staff member with the owner shape without `scope`). */
+        InstitutionMetrics: components["schemas"]["InstitutionMetricsOwner"] | components["schemas"]["InstitutionMetricsInstructor"];
     };
     responses: {
         /** @description No or invalid bearer token (Laravel AuthenticationException rendered as JSON; `api/*` always gets JSON). */
@@ -1581,13 +1713,13 @@ export interface components {
                 "application/json": components["schemas"]["MessageError"];
             };
         };
-        /** @description Policy refused (Gate::authorize → AuthorizationException). */
+        /** @description Policy refused (Gate::authorize → AuthorizationException); or the bearer token lacks the ability the operation needs (`insufficient_ability`, see `x-token-ability`). */
         Forbidden: {
             headers: {
                 [name: string]: unknown;
             };
             content: {
-                "application/json": components["schemas"]["MessageError"];
+                "application/json": components["schemas"]["MessageError"] | components["schemas"]["InsufficientAbilityError"];
             };
         };
         /** @description Model not found, or deliberately hidden (no enrolment / not addressable). Framework JSON error. */
@@ -1622,6 +1754,12 @@ export interface components {
             headers: {
                 /** @description Seconds until retry (also carried as `retry_after`). */
                 "Retry-After"?: number;
+                /** @description Requests allowed in the window. */
+                "X-RateLimit-Limit"?: number;
+                /** @description Requests left in the window (0). */
+                "X-RateLimit-Remaining"?: number;
+                /** @description Unix time when the window resets. */
+                "X-RateLimit-Reset"?: number;
                 [name: string]: unknown;
             };
             content: {
@@ -1634,6 +1772,22 @@ export interface components {
                 "application/json": components["schemas"]["TooManyRequestsError"];
             };
         };
+        /** @description The bearer token does not carry the ability this operation needs. */
+        InsufficientAbility: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                /**
+                 * @example {
+                 *       "message": "This token does not carry the «purchase» ability.",
+                 *       "error": "insufficient_ability",
+                 *       "required_ability": "purchase"
+                 *     }
+                 */
+                "application/json": components["schemas"]["InsufficientAbilityError"];
+            };
+        };
     };
     parameters: {
         /** @description Course slug. */
@@ -1644,6 +1798,8 @@ export interface components {
         RequestPublicId: string;
         /** @description Guest cart key (truncated to 64 chars). Falls back to the `tkawen_cart_key` cookie. */
         CartKey: string;
+        /** @description Optional. 1–255 visible ASCII characters. Scoped to the caller and the route; kept 24 hours. A retry with the same key and the same body replays the first 2xx answer instead of running again. Non-2xx answers are not stored, so the key can be retried. */
+        IdempotencyKey: string;
     };
     requestBodies: never;
     headers: never;
@@ -1687,6 +1843,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -1713,6 +1870,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -1740,6 +1898,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -1786,6 +1945,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -1823,7 +1983,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
-            /** @description Caller has no active/completed enrolment in this course. */
+            /** @description Caller has no active/completed enrolment in this course; or the token lacks the `learn` ability (`insufficient_ability`). */
             403: {
                 headers: {
                     [name: string]: unknown;
@@ -1834,7 +1994,7 @@ export interface operations {
                      *       "message": "التقييم متاح للمسجّلين في هذا البرنامج فقط."
                      *     }
                      */
-                    "application/json": components["schemas"]["MessageError"];
+                    "application/json": components["schemas"]["MessageError"] | components["schemas"]["InsufficientAbilityError"];
                 };
             };
             404: components["responses"]["NotFound"];
@@ -1868,6 +2028,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -1909,6 +2070,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -1941,6 +2103,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -1973,6 +2136,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -2004,6 +2168,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2042,6 +2207,116 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    issueToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: email */
+                    email: string;
+                    password: string;
+                    /** @description Stored as the token name `api-v1:<device_name>` (default `client`). */
+                    device_name?: string | null;
+                    /** @description Default: all four. */
+                    abilities?: components["schemas"]["TokenAbility"][];
+                };
+            };
+        };
+        responses: {
+            /** @description Token issued. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: components["schemas"]["IssuedToken"];
+                    };
+                };
+            };
+            /** @description E-mail not verified (a fresh 6-digit code is mailed; complete it through the legacy `POST /api/auth/verify-email`), or the account is suspended. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        verification_required: true;
+                        email: string;
+                        message: string;
+                    } | {
+                        message: string;
+                        /** @constant */
+                        error: "account_suspended";
+                    };
+                };
+            };
+            /** @description Validation failure, an ability outside the allow-list, or wrong credentials (`errors.email`: «بيانات الدخول غير صحيحة.», the same for an unknown e-mail). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ValidationError"];
+                };
+            };
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    revokeToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revoked. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            401: components["responses"]["Unauthenticated"];
+            429: components["responses"]["TooManyRequests"];
+        };
+    };
+    getAuthenticatedCaller: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Caller. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data: {
+                            user: components["schemas"]["ApiUser"];
+                            token: components["schemas"]["TokenInfo"];
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Unauthenticated"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2075,6 +2350,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2099,6 +2375,7 @@ export interface operations {
                     "application/json": components["schemas"]["LessonDetail"];
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             423: components["responses"]["LessonLocked"];
             429: components["responses"]["TooManyRequests"];
@@ -2147,6 +2424,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             423: components["responses"]["LessonLocked"];
             429: components["responses"]["TooManyRequests"];
@@ -2182,6 +2460,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationFailed"];
             423: components["responses"]["LessonLocked"];
@@ -2215,6 +2494,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -2251,6 +2531,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationFailed"];
             429: components["responses"]["TooManyRequests"];
@@ -2295,6 +2576,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationFailed"];
             423: components["responses"]["LessonLocked"];
@@ -2323,6 +2605,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -2357,6 +2640,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2383,6 +2667,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2406,7 +2691,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Updated cart. (A JsonResource around a model saved earlier in the request; Laravel may answer 201 when the cart row was created in this request — status depends on `wasRecentlyCreated`, see GAPS.) */
+            /** @description Updated cart. (A JsonResource around a model saved earlier in the request; Laravel may answer 201 when the cart row was created in this request — status depends on `wasRecentlyCreated`,) */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -2428,6 +2713,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             422: components["responses"]["ValidationFailed"];
             429: components["responses"]["TooManyRequests"];
@@ -2470,6 +2756,7 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2479,6 +2766,8 @@ export interface operations {
             header?: {
                 /** @description Guest cart key (truncated to 64 chars). Falls back to the `tkawen_cart_key` cookie. */
                 "X-Cart-Key"?: components["parameters"]["CartKey"];
+                /** @description Optional. 1–255 visible ASCII characters. Scoped to the caller and the route; kept 24 hours. A retry with the same key and the same body replays the first 2xx answer instead of running again. Non-2xx answers are not stored, so the key can be retried. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
             };
             path?: never;
             cookie?: never;
@@ -2494,6 +2783,8 @@ export interface operations {
             /** @description Pending order with items. */
             201: {
                 headers: {
+                    /** @description Present when this answer is a replay of an earlier request with the same Idempotency-Key. */
+                    "Idempotent-Replayed"?: "true";
                     [name: string]: unknown;
                 };
                 content: {
@@ -2502,7 +2793,17 @@ export interface operations {
                     };
                 };
             };
+            /** @description Malformed Idempotency-Key (`invalid_idempotency_key`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdempotencyError"];
+                };
+            };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             /** @description No open cart (message «لا توجد سلّة مفتوحة.»), or a cart line's course no longer exists. */
             404: {
                 headers: {
@@ -2512,13 +2813,23 @@ export interface operations {
                     "application/json": components["schemas"]["MessageError"];
                 };
             };
-            /** @description Cart is empty (`abort(422, "The cart is empty.")`) or validation failure. */
+            /** @description A request with the same Idempotency-Key is still running (`idempotency_request_in_progress`, Retry-After: 1). */
+            409: {
+                headers: {
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdempotencyError"];
+                };
+            };
+            /** @description Cart is empty (`abort(422, "The cart is empty.")`) or validation failure; or the Idempotency-Key was already used with a different body (`idempotency_key_reused`). */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MessageError"];
+                    "application/json": components["schemas"]["MessageError"] | components["schemas"]["IdempotencyError"];
                 };
             };
             429: components["responses"]["TooManyRequests"];
@@ -2527,7 +2838,10 @@ export interface operations {
     settleFreeOrder: {
         parameters: {
             query?: never;
-            header?: never;
+            header?: {
+                /** @description Optional. 1–255 visible ASCII characters. Scoped to the caller and the route; kept 24 hours. A retry with the same key and the same body replays the first 2xx answer instead of running again. Non-2xx answers are not stored, so the key can be retried. */
+                "Idempotency-Key"?: components["parameters"]["IdempotencyKey"];
+            };
             path: {
                 /** @description Order number. */
                 number: string;
@@ -2539,12 +2853,23 @@ export interface operations {
             /** @description Paid order with items and invoice. */
             200: {
                 headers: {
+                    /** @description Present when this answer is a replay of an earlier request with the same Idempotency-Key. */
+                    "Idempotent-Replayed"?: "true";
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": {
                         data: components["schemas"]["Order"];
                     };
+                };
+            };
+            /** @description Malformed Idempotency-Key (`invalid_idempotency_key`). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdempotencyError"];
                 };
             };
             401: components["responses"]["Unauthenticated"];
@@ -2562,8 +2887,9 @@ export interface operations {
                     };
                 };
             };
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
-            /** @description Already paid. */
+            /** @description Already paid; or a request with the same Idempotency-Key is still running (`idempotency_request_in_progress`, Retry-After: 1). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2574,7 +2900,16 @@ export interface operations {
                      *       "message": "This order is already paid."
                      *     }
                      */
-                    "application/json": components["schemas"]["MessageError"];
+                    "application/json": components["schemas"]["MessageError"] | components["schemas"]["IdempotencyError"];
+                };
+            };
+            /** @description The Idempotency-Key was already used with a different order or body (`idempotency_key_reused`). */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdempotencyError"];
                 };
             };
             429: components["responses"]["TooManyRequests"];
@@ -2601,6 +2936,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2625,6 +2961,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2649,6 +2986,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2676,6 +3014,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -2699,6 +3038,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2732,6 +3072,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2759,6 +3100,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             404: components["responses"]["NotFound"];
             429: components["responses"]["TooManyRequests"];
         };
@@ -2796,6 +3138,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -2830,6 +3173,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             /** @description Validation failure (Laravel shape), or unknown course slug (`{"error": "الدورة المذكورة غير موجودة."}`). */
             422: {
                 headers: {
@@ -2971,6 +3315,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -3009,6 +3354,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             /** @description Nothing saveable under that key (course must be published; instructor must have role instructor/tenant_admin). */
             404: {
                 headers: {
@@ -3049,6 +3395,7 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
+            403: components["responses"]["InsufficientAbility"];
             429: components["responses"]["TooManyRequests"];
         };
     };
@@ -3108,13 +3455,13 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthenticated"];
-            /** @description Not staff (`هذه اللوحة لطاقم المعهد فقط.`) or banned (`الحساب موقوف.`). */
+            /** @description Not staff (`هذه اللوحة لطاقم المعهد فقط.`) or banned (`الحساب موقوف.`); or the token lacks the `read` ability (`insufficient_ability`). */
             403: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["MessageError"];
+                    "application/json": components["schemas"]["MessageError"] | components["schemas"]["InsufficientAbilityError"];
                 };
             };
             422: components["responses"]["ValidationFailed"];

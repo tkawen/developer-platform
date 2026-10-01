@@ -4,6 +4,18 @@ All notable changes to this package are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## 0.2.0 — 2026-10-01
+
+### Added
+- The `whoami` tool, registered only when `TKAWEN_TOKEN` is set. It is read-only and calls the SDK's
+  `getAuthenticatedCaller` (`GET /auth/me`). It returns the account behind the token and the token's
+  abilities and expiry, never the token itself. **Pending deployment**: until the academy's server
+  release, the tool returns an API error. Its description says so.
+
+### Changed
+- Depends on `@tkawen/os-sdk` `^0.2.0`.
+- `SERVER_VERSION` is now `0.2.0`.
+
 ## 0.1.1 — 2026-09-30
 
 - Add repository, homepage and bugs links (github.com/tkawen/developer-platform).

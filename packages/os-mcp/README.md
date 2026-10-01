@@ -4,7 +4,7 @@ This is a **read-only** [Model Context Protocol](https://modelcontextprotocol.io
 
 It is built on [`@tkawen/os-sdk`](../os-sdk) and the official `@modelcontextprotocol/sdk`. Every call fetches data **live** from `https://{academy}.tkawen.com/api/v1`. **No tool writes anything.** The server has no cart, checkout, review, discussion, request, wishlist or progress tools.
 
-> **Status: 0.1.0, not published yet.** The `npx` lines below work only after the first `npm publish`. Until then, point your client at `node <path>/packages/os-mcp/dist/cli.js`.
+> **Status: 0.2.0.** The `npx` lines below work only once the package is on npm. Until then, point your client at `node <path>/packages/os-mcp/dist/cli.js`.
 
 ## Tools
 
@@ -19,8 +19,11 @@ It is built on [`@tkawen/os-sdk`](../os-sdk) and the official `@modelcontextprot
 | `get_my_dashboard` | **yes** | `getMyDashboard` |
 | `list_my_courses` | **yes** | `listMyCourses` |
 | `get_my_transcript` | **yes** | `getMyTranscript` |
+| `whoami` | **yes** | `getAuthenticatedCaller` (pending deployment) |
 
-The three token tools are registered only when `TKAWEN_TOKEN` is set. `get_course_locks` is not provided because its operation (`getCourseLocks`) requires a token, and this server exposes only the tools listed above. All tools carry the annotations `readOnlyHint: true` and `destructiveHint: false`.
+`whoami` returns the account behind the token and the token's abilities and expiry, never the token itself. Its server operation (`GET /api/v1/auth/me`) is pending deployment, so until the academy's server release the tool returns an API error.
+
+The four token tools are registered only when `TKAWEN_TOKEN` is set. `get_course_locks` is not provided because its operation (`getCourseLocks`) requires a token, and this server exposes only the tools listed above. All tools carry the annotations `readOnlyHint: true` and `destructiveHint: false`.
 
 API errors come back as MCP error results (`isError: true`) in the form `TKAWEN API error <status> (<kind>) on <operationId>: <message>`. For a locked lesson the result adds `needs`/`needs_slug`, and for a 429 it adds the retry delay. The token is never echoed: any occurrence in output is replaced with `[redacted]`.
 
@@ -30,10 +33,10 @@ API errors come back as MCP error results (`isError: true`) in the form `TKAWEN 
 |---|---|---|
 | `TKAWEN_ACADEMY` | yes | Academy subdomain, e.g. `demo` for `demo.tkawen.com` |
 | `TKAWEN_BASE_URL` | no | Override the API root (https only; http allowed for localhost) |
-| `TKAWEN_TOKEN` | no | Learner's Sanctum token. It enables the three `my` tools |
+| `TKAWEN_TOKEN` | no | Learner's Sanctum token. It enables the four token tools |
 | `TKAWEN_LOCALE` | no | `ar`, `fr` or `en`, sent as `Accept-Language` |
 
-/api/v1 cannot issue tokens. A learner token comes from the academy's legacy `POST /api/auth/login`. Tokens do not expire and have no scopes, so give this server a token only on a machine you trust, and prefer a dedicated account.
+Today a learner token comes from the academy's legacy `POST /api/auth/login`. Those tokens have full access and do not expire, so give this server a token only on a machine you trust, and prefer a dedicated account. After the server release, issue a token with `POST /api/v1/auth/token` (the SDK's `createToken`) and ask only for the `read` ability: every tool of this server is a GET, and `read` is all they need. That token also expires (30 days by default).
 
 ### Claude Desktop (`claude_desktop_config.json`)
 
@@ -91,7 +94,7 @@ npm test         # SDK mocked + an in-process smoke test; no network
 npm run build
 ```
 
-Before publishing, publish `@tkawen/os-sdk` first and replace `"@tkawen/os-sdk": "file:../os-sdk"` with `"^0.1.0"`. The `prepublishOnly` script refuses to publish while the dependency is still local.
+Before publishing, publish `@tkawen/os-sdk` first and make sure the dependency is `"@tkawen/os-sdk": "^0.2.0"` and not a `file:` path. The `prepublishOnly` script refuses to publish while the dependency is still local.
 
 ## License
 

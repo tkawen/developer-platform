@@ -1,6 +1,6 @@
 {
   "name": "@tkawen/os-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Read-only MCP server (stdio) exposing a TKAWEN OS academy's live catalogue, instructors, certificate verification and, with a token, the learner's own dashboard.",
   "license": "MIT",
   "author": "TKAWEN",
@@ -47,7 +47,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.31.0",
-    "@tkawen/os-sdk": "^0.1.1",
+    "@tkawen/os-sdk": "^0.2.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
